@@ -1,10 +1,23 @@
 {
-  "name": "DuckClaude",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "name": "duck-pet-agent",
+  "version": "0.1.0",
+  "description": "A desktop duck whose DesktopGoose-style mischief is driven by live Claude Code status.",
+  "main": "src/main/main.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "rebuild": "electron-rebuild -f -w @nut-tree-fork/nut-js",
+    "spike:overlay": "electron spike/probe-overlay.js",
+    "spike:hook": "node spike/probe-hook.js",
+    "spike:cursor": "electron spike/probe-cursor.js",
+    "spike:window": "node spike/probe-window.js"
   },
-  "private": true
+  "private": true,
+  "dependencies": {
+    "@nut-tree-fork/nut-js": "^4.2.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.6.0",
+    "electron": "^31.0.0"
+  }
 }
