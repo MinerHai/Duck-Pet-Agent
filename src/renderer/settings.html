@@ -1,0 +1,86 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font: 14px -apple-system, system-ui, sans-serif; margin: 0; padding: 16px 18px;
+        background: Canvas; color: CanvasText;
+      }
+      h1 { font-size: 18px; margin: 0 0 4px; }
+      .sub { opacity: .6; margin: 0 0 16px; font-size: 12px; }
+      section {
+        border: 1px solid color-mix(in srgb, CanvasText 15%, transparent);
+        border-radius: 10px; padding: 12px 14px; margin-bottom: 12px;
+      }
+      h2 {
+        font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+        opacity: .6; margin: 0 0 10px;
+      }
+      .row {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; margin: 8px 0;
+      }
+      .row label { flex: 1; }
+      .row .val { opacity: .6; font-variant-numeric: tabular-nums; min-width: 56px; text-align: right; }
+      input[type=range] { width: 160px; }
+      .hint { font-size: 11px; opacity: .55; margin: 2px 0 0; }
+      #chaosGroup.disabled { opacity: .4; }
+      button {
+        font: inherit; padding: 7px 12px; border-radius: 8px;
+        border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+        background: color-mix(in srgb, CanvasText 6%, transparent); color: inherit; cursor: pointer;
+      }
+      button:hover { background: color-mix(in srgb, CanvasText 12%, transparent); }
+      .badge {
+        font-size: 10px; padding: 1px 6px; border-radius: 6px;
+        background: color-mix(in srgb, orange 30%, transparent);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🦆 DuckClaude</h1>
+    <p class="sub">Changes apply instantly — just like the goose.</p>
+
+    <section>
+      <h2>Behavior</h2>
+      <div class="row"><label>Wander min</label><input id="wmin" type="range" min="5" max="120" /><span class="val" id="wminV"></span></div>
+      <div class="row"><label>Wander max</label><input id="wmax" type="range" min="5" max="120" /><span class="val" id="wmaxV"></span></div>
+      <p class="hint" id="wanderHint"></p>
+    </section>
+
+    <section>
+      <h2>Chaos</h2>
+      <div class="row"><label>Enable chaos</label><input id="chaos" type="checkbox" /></div>
+      <div id="chaosGroup">
+        <div class="row"><label>Footprints</label><input data-chaos="footprints" type="checkbox" /></div>
+        <div class="row"><label>Bring memes</label><input data-chaos="bringMemes" type="checkbox" /></div>
+        <div class="row"><label>Grab cursor <span class="badge">mac</span></label><input data-chaos="grabCursor" type="checkbox" /></div>
+        <div class="row"><label>Nudge windows <span class="badge">mac</span></label><input data-chaos="nudgeWindows" type="checkbox" /></div>
+        <div class="row"><label>Random attacks</label><input data-chaos="randomAttacks" type="checkbox" /></div>
+        <p class="hint" id="accHint"></p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Appearance</h2>
+      <div class="row"><label>Duck size</label><input id="size" type="range" min="24" max="96" /><span class="val" id="sizeV"></span></div>
+      <div class="row"><label>Opacity</label><input id="opacity" type="range" min="20" max="100" /><span class="val" id="opacityV"></span></div>
+    </section>
+
+    <section>
+      <h2>Sound</h2>
+      <div class="row"><label>Honk</label><input id="sound" type="checkbox" /></div>
+      <div class="row"><label>Volume</label><input id="vol" type="range" min="0" max="100" /><span class="val" id="volV"></span></div>
+    </section>
+
+    <section>
+      <h2>Content</h2>
+      <div class="row"><button id="memes">Open Memes Folder</button><button id="notes">Open Notes Folder</button></div>
+      <p class="hint">Drop images into Memes and .txt files into Notes to customize what the duck brings you.</p>
+    </section>
+
+    <script src="./settings.js"></script>
+  </body>
+</html>
