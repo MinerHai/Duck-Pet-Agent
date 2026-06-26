@@ -1446,3 +1446,530 @@ git tag duckclaude-mvp-demo
 **Type/name consistency:** `mapEvent`, `StateMachine({onChange,setTimer,clearTimer})`, `createListener({port,host,onEvent}).listen()/close()`, `installHooks/uninstallHooks({settingsPath,url})`, `HOOK_EVENTS`, `easePath(from,to,steps)`, `buildWindowNudgeScript(dx,dy)`, `cursorGrab(from,to,steps)`, `nudgeWindow(dx,dy)`, `config.PORT/HOST/hookUrl()`, renderer `window.duckBridge.onState/onCursor`, IPC channels `state`/`cursor` — used consistently across tasks. ✓
 
 **Known simplifications (intentional, within spec scope):** duck is an emoji on canvas rather than a spritesheet (spec §9 allows placeholder art); window nudge targets the frontmost process generically rather than a configured app name (spec §8 notes target chosen at demo time).
+
+---
+
+# Addendum v2 — Settings, customization & content (spec §14–16)
+
+These tasks add the Settings window, per-behavior customization, and Memes/Notes folders.
+They **supersede** the timer default in Task 5 (now a user-configurable 20–40s wander range)
+and **extend** the wiring in Task 10. Build order: do Tasks 13–15 (pure, TDD) right after
+Task 7, then the window (Task 16) and wiring (Task 17) alongside Task 10.
+
+## Task 13: Settings store (TDD)
+
+**Files:** Create `src/main/settings-store.js`; Test `test/settings-store.test.js`
+
+- [ ] **Step 1: Failing test** — `test/settings-store.test.js`
+
+```js
+'use strict'
+const { test } = require('node:test')
+const assert = require('node:assert')
+const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path')
+const { load, save, DEFAULTS } = require('../src/main/settings-store')
+
+function tmp() { return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'duckset-')), 's.json') }
+
+test('load() returns DEFAULTS when file is missing', () => {
+  assert.deepStrictEqual(load(tmp()), DEFAULTS)
+})
+test('load() deep-merges saved partial over defaults', () => {
+  const p = tmp()
+  fs.writeFileSync(p, JSON.stringify({ duckSize: 80, chaos: { enabled: true } }))
+  const s = load(p)
+  assert.strictEqual(s.duckSize, 80)
+  assert.strictEqual(s.chaos.enabled, true)
+  assert.strictEqual(s.chaos.footprints, true)        // default preserved
+  assert.strictEqual(s.wanderMinSeconds, 20)          // untouched default
+})
+test('save() then load() round-trips', () => {
+  const p = tmp()
+  const next = { ...DEFAULTS, honkVolume: 0.3, chaos: { ...DEFAULTS.chaos, nudgeWindows: false } }
+  save(p, next)
+  assert.deepStrictEqual(load(p), next)
+})
+```
+
+- [ ] **Step 2: Run → FAIL** (`node --test test/settings-store.test.js`)
+
+- [ ] **Step 3: Implement** — `src/main/settings-store.js`
+
+```js
+'use strict'
+const fs = require('node:fs')
+const path = require('node:path')
+
+const DEFAULTS = Object.freeze({
+  wanderMinSeconds: 20,
+  wanderMaxSeconds: 40,
+  duckSize: 54,
+  opacity: 1.0,
+  soundEnabled: true,
+  honkVolume: 1.0,
+  chaos: Object.freeze({
+    enabled: false,
+    footprints: true,
+    bringMemes: true,
+    grabCursor: true,
+    nudgeWindows: true,
+    randomAttacks: false,
+  }),
+  hooksInstalled: true,
+})
+
+function isObj(v) { return v && typeof v === 'object' && !Array.isArray(v) }
+function deepMerge(base, over) {
+  const out = Array.isArray(base) ? [...base] : { ...base }
+  for (const k of Object.keys(over || {})) {
+    out[k] = isObj(base[k]) && isObj(over[k]) ? deepMerge(base[k], over[k]) : over[k]
+  }
+  return out
+}
+
+function load(file) {
+  let saved = {}
+  try { saved = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { saved = {} }
+  return deepMerge(DEFAULTS, saved)
+}
+function save(file, settings) {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify(settings, null, 2))
+}
+
+module.exports = { DEFAULTS, load, save, deepMerge }
+```
+
+- [ ] **Step 4: Run → PASS.**  **Step 5: Commit** `feat: settings store with deep-merge defaults`
+
+## Task 14: Content module — Memes/Notes folders (TDD pure parts)
+
+**Files:** Create `src/main/content.js`; Test `test/content.test.js`
+
+- [ ] **Step 1: Failing test** — `test/content.test.js`
+
+```js
+'use strict'
+const { test } = require('node:test')
+const assert = require('node:assert')
+const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path')
+const { ensureFolders, listFiles, pickRandom } = require('../src/main/content')
+
+function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'duckcontent-')) }
+
+test('ensureFolders creates Memes and Notes and seeds a starter note', () => {
+  const base = tmpDir()
+  const { memesDir, notesDir } = ensureFolders(base)
+  assert.ok(fs.existsSync(memesDir))
+  assert.ok(fs.existsSync(notesDir))
+  assert.ok(listFiles(notesDir, ['.txt']).length >= 1, 'expected a seeded note')
+})
+test('listFiles filters by extension', () => {
+  const d = tmpDir()
+  fs.writeFileSync(path.join(d, 'a.png'), 'x'); fs.writeFileSync(path.join(d, 'b.txt'), 'y')
+  assert.deepStrictEqual(listFiles(d, ['.png']).map((f) => path.basename(f)), ['a.png'])
+})
+test('pickRandom is deterministic under an injected rng', () => {
+  assert.strictEqual(pickRandom(['a', 'b', 'c'], () => 0), 'a')
+  assert.strictEqual(pickRandom(['a', 'b', 'c'], () => 0.99), 'c')
+  assert.strictEqual(pickRandom([], () => 0), null)
+})
+```
+
+- [ ] **Step 2: Run → FAIL.**
+
+- [ ] **Step 3: Implement** — `src/main/content.js`
+
+```js
+'use strict'
+const fs = require('node:fs')
+const path = require('node:path')
+
+const SEED_NOTES = ['HONK!', "I'm watching your code 👀", 'Did you commit yet?']
+
+function ensureFolders(baseDir) {
+  const memesDir = path.join(baseDir, 'Memes')
+  const notesDir = path.join(baseDir, 'Notes')
+  fs.mkdirSync(memesDir, { recursive: true })
+  fs.mkdirSync(notesDir, { recursive: true })
+  if (listFiles(notesDir, ['.txt']).length === 0) {
+    SEED_NOTES.forEach((text, i) => fs.writeFileSync(path.join(notesDir, `note${i + 1}.txt`), text))
+  }
+  return { memesDir, notesDir }
+}
+function listFiles(dir, exts) {
+  let names = []
+  try { names = fs.readdirSync(dir) } catch { return [] }
+  return names
+    .filter((n) => exts.includes(path.extname(n).toLowerCase()))
+    .map((n) => path.join(dir, n))
+}
+function pickRandom(list, rng = Math.random) {
+  if (!list.length) return null
+  return list[Math.min(list.length - 1, Math.floor(rng() * list.length))]
+}
+
+module.exports = { ensureFolders, listFiles, pickRandom, SEED_NOTES }
+```
+
+- [ ] **Step 4: Run → PASS.**  **Step 5: Commit** `feat: memes/notes content folders (ensure/list/pickRandom)`
+
+## Task 15: StateMachine wander-range + live settings (TDD) — supersedes Task 5 defaults
+
+**Files:** Modify `src/main/state-machine.js`; Modify `test/state-machine.test.js`
+
+The boredom timer becomes a randomized wander duration in `[wanderMinMs, wanderMaxMs]`,
+with an injectable `rng`, plus an `applySettings()` for live updates.
+
+- [ ] **Step 1: Add failing tests** (append to `test/state-machine.test.js`)
+
+```js
+test('wander delay uses rng across [wanderMinMs, wanderMaxMs]', () => {
+  const delays = []
+  const t = {
+    set: (fn, ms) => { delays.push(ms); return fn },
+    clear: () => {},
+  }
+  const sm = new StateMachine({
+    onChange: () => {}, setTimer: t.set, clearTimer: t.clear,
+    wanderMinMs: 20000, wanderMaxMs: 40000, rng: () => 0.5,
+  })
+  sm._set('IDLE_ROAM')             // schedules a wander timer
+  assert.strictEqual(delays.at(-1), 30000) // 20000 + 0.5*(20000)
+})
+test('applySettings updates the wander range live', () => {
+  const delays = []
+  const t = { set: (fn, ms) => { delays.push(ms); return fn }, clear: () => {} }
+  const sm = new StateMachine({ onChange: () => {}, setTimer: t.set, clearTimer: t.clear, rng: () => 0 })
+  sm.applySettings({ wanderMinMs: 5000, wanderMaxMs: 9000 })
+  sm._set('IDLE_ROAM')
+  assert.strictEqual(delays.at(-1), 5000)  // min, since rng()=0
+})
+```
+
+- [ ] **Step 2: Run → FAIL.**
+
+- [ ] **Step 3: Update the constructor and timer** in `src/main/state-machine.js`:
+
+Replace the constructor body's timer fields and add `rng`/range + `applySettings` +
+`_boredomDelay`, and use it in `_scheduleTimers`:
+
+```js
+  constructor({ onChange, setTimer = setTimeout, clearTimer = clearTimeout, rng = Math.random,
+                wanderMinMs = 20000, wanderMaxMs = 40000, doneDecayMs = 2500, mischiefMs = 4000 } = {}) {
+    this.state = STATES.IDLE_ROAM
+    this._onChange = onChange || (() => {})
+    this._setTimer = setTimer
+    this._clearTimer = clearTimer
+    this._rng = rng
+    this._wanderMinMs = wanderMinMs
+    this._wanderMaxMs = wanderMaxMs
+    this._doneDecayMs = doneDecayMs
+    this._mischiefMs = mischiefMs
+    this._timer = null
+  }
+
+  applySettings({ wanderMinMs, wanderMaxMs } = {}) {
+    if (typeof wanderMinMs === 'number') this._wanderMinMs = wanderMinMs
+    if (typeof wanderMaxMs === 'number') this._wanderMaxMs = wanderMaxMs
+  }
+
+  _boredomDelay() {
+    return Math.round(this._wanderMinMs + this._rng() * (this._wanderMaxMs - this._wanderMinMs))
+  }
+```
+
+And in `_scheduleTimers`, change the IDLE_ROAM branch from `this._boredomMs` to
+`this._boredomDelay()`:
+
+```js
+    } else if (this.state === STATES.IDLE_ROAM) {
+      this._timer = this._setTimer(() => this._set(STATES.MISCHIEF), this._boredomDelay())
+    } else if (this.state === STATES.MISCHIEF) {
+```
+
+(Remove the now-unused `boredomMs` references from Task 5; the earlier Task 5 timer tests
+still pass because they only fire the pending timer, not assert its delay.)
+
+- [ ] **Step 4: Run → PASS** (`node --test test/state-machine.test.js`).  **Step 5: Commit**
+`feat: configurable randomized wander timer + applySettings`
+
+## Task 16: Settings window UI/UX (manual verification)
+
+**Files:** Create `src/main/settings-window.js`, `src/main/settings-preload.js`,
+`src/renderer/settings.html`, `src/renderer/settings.js`
+
+- [ ] **Step 1: Settings preload** — `src/main/settings-preload.js`
+
+```js
+'use strict'
+const { contextBridge, ipcRenderer } = require('electron')
+contextBridge.exposeInMainWorld('settingsBridge', {
+  get: () => ipcRenderer.invoke('settings:get'),
+  set: (partial) => ipcRenderer.invoke('settings:set', partial),
+  openMemes: () => ipcRenderer.invoke('content:openMemes'),
+  openNotes: () => ipcRenderer.invoke('content:openNotes'),
+  accessibilityOk: () => ipcRenderer.invoke('perm:accessibility'),
+})
+```
+
+- [ ] **Step 2: Settings window factory** — `src/main/settings-window.js`
+
+```js
+'use strict'
+const path = require('node:path')
+const { BrowserWindow } = require('electron')
+
+let win = null
+function openSettingsWindow() {
+  if (win && !win.isDestroyed()) { win.focus(); return win }
+  win = new BrowserWindow({
+    width: 480, height: 700, resizable: false, title: 'DuckClaude Settings',
+    webPreferences: { preload: path.join(__dirname, 'settings-preload.js') },
+  })
+  win.removeMenu()
+  win.loadFile(path.join(__dirname, '..', 'renderer', 'settings.html'))
+  win.on('closed', () => { win = null })
+  return win
+}
+module.exports = { openSettingsWindow }
+```
+
+- [ ] **Step 3: Settings HTML** — `src/renderer/settings.html`
+
+```html
+<!doctype html>
+<html><head><meta charset="utf-8" />
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px -apple-system, system-ui, sans-serif; margin: 0; padding: 16px 18px;
+         background: Canvas; color: CanvasText; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { opacity: .6; margin: 0 0 16px; font-size: 12px; }
+  section { border: 1px solid color-mix(in srgb, CanvasText 15%, transparent);
+            border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; opacity: .6; margin: 0 0 10px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0; }
+  .row label { flex: 1; }
+  .row .val { opacity: .6; font-variant-numeric: tabular-nums; min-width: 56px; text-align: right; }
+  input[type=range] { width: 160px; }
+  .hint { font-size: 11px; opacity: .55; margin: 2px 0 0; }
+  .gated[disabled-group] { opacity: .45; }
+  button { font: inherit; padding: 7px 12px; border-radius: 8px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+           background: color-mix(in srgb, CanvasText 6%, transparent); color: inherit; cursor: pointer; }
+  button:hover { background: color-mix(in srgb, CanvasText 12%, transparent); }
+  .badge { font-size: 10px; padding: 1px 6px; border-radius: 6px; background: color-mix(in srgb, orange 30%, transparent); }
+</style></head>
+<body>
+  <h1>🦆 DuckClaude</h1>
+  <p class="sub">Changes apply instantly — just like the goose.</p>
+
+  <section><h2>Behavior</h2>
+    <div class="row"><label>Wander min</label><input id="wmin" type="range" min="5" max="120"><span class="val" id="wminV"></span></div>
+    <div class="row"><label>Wander max</label><input id="wmax" type="range" min="5" max="120"><span class="val" id="wmaxV"></span></div>
+    <p class="hint" id="wanderHint"></p>
+  </section>
+
+  <section><h2>Chaos</h2>
+    <div class="row"><label>Enable chaos</label><input id="chaos" type="checkbox"></div>
+    <div id="chaosGroup">
+      <div class="row"><label>Footprints</label><input data-chaos="footprints" type="checkbox"></div>
+      <div class="row"><label>Bring memes</label><input data-chaos="bringMemes" type="checkbox"></div>
+      <div class="row"><label>Grab cursor <span class="badge" id="acc1">mac</span></label><input data-chaos="grabCursor" type="checkbox"></div>
+      <div class="row"><label>Nudge windows <span class="badge" id="acc2">mac</span></label><input data-chaos="nudgeWindows" type="checkbox"></div>
+      <div class="row"><label>Random attacks</label><input data-chaos="randomAttacks" type="checkbox"></div>
+      <p class="hint" id="accHint"></p>
+    </div>
+  </section>
+
+  <section><h2>Appearance</h2>
+    <div class="row"><label>Duck size</label><input id="size" type="range" min="24" max="96"><span class="val" id="sizeV"></span></div>
+    <div class="row"><label>Opacity</label><input id="opacity" type="range" min="20" max="100"><span class="val" id="opacityV"></span></div>
+  </section>
+
+  <section><h2>Sound</h2>
+    <div class="row"><label>Honk</label><input id="sound" type="checkbox"></div>
+    <div class="row"><label>Volume</label><input id="vol" type="range" min="0" max="100"><span class="val" id="volV"></span></div>
+  </section>
+
+  <section><h2>Content</h2>
+    <div class="row"><button id="memes">Open Memes Folder</button><button id="notes">Open Notes Folder</button></div>
+    <p class="hint">Drop images into Memes and .txt files into Notes to customize what the duck brings you.</p>
+  </section>
+
+  <script src="./settings.js"></script>
+</body></html>
+```
+
+- [ ] **Step 4: Settings renderer logic** — `src/renderer/settings.js`
+
+```js
+'use strict'
+const B = window.settingsBridge
+const $ = (id) => document.getElementById(id)
+let S = null
+
+function applyToUI() {
+  $('wmin').value = S.wanderMinSeconds; $('wminV').textContent = S.wanderMinSeconds + 's'
+  $('wmax').value = S.wanderMaxSeconds; $('wmaxV').textContent = S.wanderMaxSeconds + 's'
+  $('wanderHint').textContent = `Wanders every ${S.wanderMinSeconds}–${S.wanderMaxSeconds}s before getting bored.`
+  $('chaos').checked = S.chaos.enabled
+  document.querySelectorAll('[data-chaos]').forEach((el) => {
+    el.checked = S.chaos[el.dataset.chaos]; el.disabled = !S.chaos.enabled
+  })
+  $('size').value = S.duckSize; $('sizeV').textContent = S.duckSize + 'px'
+  $('opacity').value = Math.round(S.opacity * 100); $('opacityV').textContent = Math.round(S.opacity * 100) + '%'
+  $('sound').checked = S.soundEnabled
+  $('vol').value = Math.round(S.honkVolume * 100); $('volV').textContent = Math.round(S.honkVolume * 100) + '%'
+}
+
+async function push(partial) { S = await B.set(partial); applyToUI() }
+
+function wire() {
+  $('wmin').oninput = (e) => push({ wanderMinSeconds: +e.target.value })
+  $('wmax').oninput = (e) => push({ wanderMaxSeconds: +e.target.value })
+  $('chaos').onchange = (e) => push({ chaos: { enabled: e.target.checked } })
+  document.querySelectorAll('[data-chaos]').forEach((el) => {
+    el.onchange = () => push({ chaos: { [el.dataset.chaos]: el.checked } })
+  })
+  $('size').oninput = (e) => push({ duckSize: +e.target.value })
+  $('opacity').oninput = (e) => push({ opacity: +e.target.value / 100 })
+  $('sound').onchange = (e) => push({ soundEnabled: e.target.checked })
+  $('vol').oninput = (e) => push({ honkVolume: +e.target.value / 100 })
+  $('memes').onclick = () => B.openMemes()
+  $('notes').onclick = () => B.openNotes()
+}
+
+;(async () => {
+  S = await B.get()
+  wire(); applyToUI()
+  const ok = await B.accessibilityOk()
+  if (!ok) { $('accHint').textContent = 'Grab cursor / Nudge windows need Accessibility permission (System Settings → Privacy).' }
+})()
+```
+
+- [ ] **Step 5: Verify** — wired in Task 17, then open via tray "Settings…": dragging any
+  slider instantly changes the live duck; chaos children disable when master is off; folder
+  buttons open Finder. **Commit** `feat: settings window UI (instant-apply, sectioned)`
+
+## Task 17: Wire settings + content into the app — extends Task 10
+
+**Files:** Modify `src/main/main.js`, `src/main/tray.js`, `src/renderer/overlay.js`,
+`src/main/effects.js`
+
+- [ ] **Step 1: main.js — load settings, IPC handlers, apply live.** Add imports and replace
+  the `app.whenReady()` body to load settings, seed content folders, pass wander range +
+  settings to the StateMachine and renderer, and register IPC:
+
+```js
+const { ipcMain, shell, systemPreferences } = require('electron')
+const settingsStore = require('./settings-store')
+const content = require('./content')
+const { openSettingsWindow } = require('./settings-window')
+const { deepMerge } = require('./settings-store')
+
+const settingsFile = () => path.join(app.getPath('userData'), 'settings.json')
+let settings = settingsStore.DEFAULTS
+let sm = null
+let dirs = null
+
+function applySettings() {
+  send('settings', settings)
+  if (sm) sm.applySettings({
+    wanderMinMs: settings.wanderMinSeconds * 1000,
+    wanderMaxMs: settings.wanderMaxSeconds * 1000,
+  })
+  if (overlay && !overlay.isDestroyed()) overlay.setOpacity(settings.opacity)
+}
+
+app.whenReady().then(() => {
+  settings = settingsStore.load(settingsFile())
+  dirs = content.ensureFolders(app.getPath('userData'))
+  createOverlay()
+  sm = new StateMachine({
+    onChange: onState,
+    wanderMinMs: settings.wanderMinSeconds * 1000,
+    wanderMaxMs: settings.wanderMaxSeconds * 1000,
+  })
+  listener = createListener({ port: config.PORT, host: config.HOST, onEvent: (n, p) => sm.handle(n, p) })
+  listener.listen()
+  if (settings.hooksInstalled) installHooks({ url: config.hookUrl() })
+  overlay.webContents.once('did-finish-load', applySettings)
+
+  ipcMain.handle('settings:get', () => settings)
+  ipcMain.handle('settings:set', (_e, partial) => {
+    settings = deepMerge(settings, partial)
+    settingsStore.save(settingsFile(), settings)
+    applySettings()
+    return settings
+  })
+  ipcMain.handle('content:openMemes', () => shell.openPath(dirs.memesDir))
+  ipcMain.handle('content:openNotes', () => shell.openPath(dirs.notesDir))
+  ipcMain.handle('perm:accessibility', () =>
+    process.platform === 'darwin' ? systemPreferences.isTrustedAccessibilityClient(false) : true)
+
+  tray = createTray({
+    getChaos: () => settings.chaos.enabled,
+    onToggleChaos: () => { settings = deepMerge(settings, { chaos: { enabled: !settings.chaos.enabled } }); settingsStore.save(settingsFile(), settings); applySettings() },
+    onSettings: () => openSettingsWindow(),
+    onQuit: () => app.quit(),
+  })
+})
+```
+
+- [ ] **Step 2: tray.js — add Settings… and folder items.** Replace `createTray` template:
+
+```js
+function createTray({ onToggleChaos, onSettings, onQuit, getChaos }) {
+  const tray = new Tray(nativeImage.createEmpty())
+  tray.setTitle('🦆')
+  function rebuild() {
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Settings…', click: onSettings },
+      { label: getChaos() ? '✓ Chaos enabled' : 'Chaos disabled', click: () => { onToggleChaos(); rebuild() } },
+      { type: 'separator' },
+      { label: 'Quit DuckClaude', click: onQuit },
+    ]))
+  }
+  rebuild()
+  return tray
+}
+```
+
+- [ ] **Step 3: overlay.js — honor settings (size, opacity handled by window, footprints
+  toggle, honk volume).** Add a settings holder and a WebAudio honk:
+
+```js
+let SETTINGS = { duckSize: 54, soundEnabled: true, honkVolume: 1, chaos: { footprints: true } }
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+function honk() {
+  if (!SETTINGS.soundEnabled || SETTINGS.honkVolume <= 0) return
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain()
+  o.type = 'sawtooth'; o.frequency.value = 180
+  g.gain.value = 0.001
+  o.connect(g); g.connect(audioCtx.destination); o.start()
+  const t = audioCtx.currentTime
+  g.gain.exponentialRampToValueAtTime(0.3 * SETTINGS.honkVolume, t + 0.04)
+  o.frequency.linearRampToValueAtTime(120, t + 0.18)
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.25)
+  o.stop(t + 0.26)
+}
+if (window.duckBridge && window.duckBridge.onSettings) {
+  window.duckBridge.onSettings((s) => { SETTINGS = s })
+}
+```
+
+Use `SETTINGS.duckSize` in place of the hard-coded `'54px serif'` (`ctx.font = SETTINGS.duckSize + 'px serif'`), gate footprint pushes on `SETTINGS.chaos.footprints`, and call `honk()` when entering `NEEDS_INPUT`. Add `onSettings` to the preload bridge:
+
+```js
+// src/main/preload.js — add to duckBridge:
+onSettings: (cb) => ipcRenderer.on('settings', (_e, s) => cb(s)),
+```
+
+- [ ] **Step 4: effects.js / main.js — gate chaos by individual flags.** In `onState`, gate
+  `cursorGrab` on `settings.chaos.enabled && settings.chaos.grabCursor`, and `nudgeWindow`
+  on `settings.chaos.enabled && settings.chaos.nudgeWindows`.
+
+- [ ] **Step 5: Verify** — open Settings from tray, toggle each control, watch the live duck
+  change (size, footprints on/off, honk volume, chaos behaviors). **Commit**
+  `feat: wire settings + content folders into overlay/tray/effects (live-apply)`

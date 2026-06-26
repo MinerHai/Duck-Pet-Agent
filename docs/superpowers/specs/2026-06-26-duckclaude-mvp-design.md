@@ -157,9 +157,13 @@ JSON (including `hook_event_name`, `session_id`, `cwd`, and for `Notification` a
 - `NEEDS_INPUT`: duck runs to the current cursor position, plays honk + attention
   animation, fires an OS notification. Holds until a non-NEEDS_INPUT event arrives.
 - `DONE`: celebrate animation (confetti) for ~2–3s, then auto-decay to `IDLE_ROAM`.
-- `MISCHIEF`: entered from `IDLE_ROAM` after boredom timer (e.g. 30–60s idle). Performs
-  one mischief action (footprint trail / bring a meme / window nudge), then returns to
-  `IDLE_ROAM`. Any incoming agent event preempts mischief immediately.
+- `MISCHIEF`: entered from `IDLE_ROAM` after a **wander timer** of a random duration in
+  `[wanderMinSeconds, wanderMaxSeconds]` (default **20–40s**, matching Desktop Goose's
+  `MinWanderingTimeSeconds`/`MaxWanderingTimeSeconds`). Performs one mischief action
+  (footprint trail / bring a meme / window nudge), then returns to `IDLE_ROAM`. Any
+  incoming agent event preempts mischief immediately. The range is user-configurable
+  (see §14–15); the duration is randomized via an injectable `rng` so it stays
+  unit-testable.
 
 Transitions are driven by (a) agent events from the Status Listener and (b) timers.
 The machine is pure logic with no Electron/OS dependency, so it is unit-testable in
@@ -180,6 +184,11 @@ isolation (TDD target #1).
   Per-process; the demo target app is chosen deliberately (some apps don't expose AX
   position).
 - Both no-op gracefully when permission is denied; the demo never blocks on them.
+
+Every chaos behavior (footprints, memes, cursor grab, window nudge, random attacks) is an
+**individually toggleable setting** under a master `chaos.enabled` switch, mirroring Desktop
+Goose's `CanAttackAtRandom` granularity. Users dial the annoyance up or down from the
+Settings window (§15). This is the core of "easy to use + customizable".
 
 ## 9. Tech Stack & Dependencies
 
@@ -230,4 +239,77 @@ isolation (TDD target #1).
 ## 13. Out of Scope (Post-MVP)
 
 Tamagotchi level/XP, token-burn chart, web leaderboard, multi-agent, custom pet-pack
-format, Windows chaos, AI-chat duck (LLM personality), rich sound pack.
+format, Windows chaos, AI-chat duck (LLM personality).
+
+> **Scope update (v2):** A **Settings window**, **per-behavior customization**, and
+> **Memes/Notes folders** are now **in scope** — the Desktop Goose for Mac README shows
+> these are exactly what makes the goose feel finished and tunable. See §14–16.
+
+## 14. Settings & Persistence
+
+A single source of truth for all tunable behavior, persisted as JSON under
+`app.getPath('userData')/settings.json` (e.g. `~/Library/Application Support/DuckClaude/`).
+
+**Defaults schema** (`settings-store.js`, pure + testable):
+
+```js
+const DEFAULTS = {
+  wanderMinSeconds: 20,        // goose MinWanderingTimeSeconds
+  wanderMaxSeconds: 40,        // goose MaxWanderingTimeSeconds
+  duckSize: 54,                // px (font size of the 🦆 glyph)
+  opacity: 1.0,               // 0.2..1
+  soundEnabled: true,
+  honkVolume: 1.0,            // 0..1  (goose SoundVolume)
+  chaos: {
+    enabled: false,           // master switch (goose: off by default)
+    footprints: true,
+    bringMemes: true,
+    grabCursor: true,         // gated, mac-only
+    nudgeWindows: true,       // gated, mac-only
+    randomAttacks: false,     // goose CanAttackAtRandom — random chaos even while idle
+  },
+  hooksInstalled: true,        // whether DuckClaude hooks are written to settings.json
+}
+```
+
+- `load(path)` deep-merges file JSON over `DEFAULTS` (so new keys get defaults).
+- `save(path, settings)` writes pretty JSON.
+- **Live-apply:** changing a setting takes effect immediately (no restart), matching the
+  goose "effective immediately" behavior. The main process re-applies wander range to the
+  StateMachine and broadcasts the new settings to the overlay renderer.
+
+## 15. Settings Window (UI/UX)
+
+A **normal focusable window** (separate from the click-through overlay), opened from the
+tray "Settings…" item. ~480×680, system font, respects light/dark via
+`prefers-color-scheme`. **No Save button** — every control applies instantly.
+
+Sections (top to bottom):
+
+1. **Behavior** — Wander time min/max (dual slider, 5–120s); shows live "wanders every
+   20–40s" text.
+2. **Chaos** — master toggle, then a disabled-until-enabled group of switches: Footprints,
+   Bring memes, Grab cursor *(mac)*, Nudge windows *(mac)*, Random attacks. Gated rows show
+   a small "needs Accessibility" hint when permission is absent.
+3. **Appearance** — Duck size slider (24–96px), Opacity slider.
+4. **Sound** — Honk on/off + volume slider.
+5. **Content** — "Open Memes Folder" and "Open Notes Folder" buttons (`shell.openPath`);
+   helper text explaining drop-in customization.
+6. **Claude Code** — Hooks installed toggle (calls install/uninstall), read-only port.
+
+UX principles: one screen, no nesting; labels + live values on every control; instant
+feedback (the duck on screen changes as you drag); gated features clearly marked rather
+than hidden. IPC: `settings:get` (handle), `settings:set` (handle, persists + applies),
+`content:openMemes` / `content:openNotes`, `hooks:set`.
+
+## 16. Content — Memes & Notes folders
+
+Mirrors Desktop Goose's drop-in folder model (`content.js`):
+
+- On first run, ensure `userData/Memes/` and `userData/Notes/` exist; seed `Notes/` with a
+  couple of starter `.txt` notes so the feature is non-empty.
+- `listFiles(dir, exts)` returns matching files; `pickRandom(list, rng)` is pure/testable.
+- When the duck "brings a meme" (chaos.bringMemes), the overlay shows a random image from
+  `Memes/` (falls back to a built-in placeholder if the folder is empty). When it "leaves a
+  note", it shows a random line from `Notes/`.
+- Users customize purely by dropping files into these folders — no rebuild, no settings.
