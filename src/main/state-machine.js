@@ -16,7 +16,11 @@ function mapEvent(hookEventName, payload = {}) {
     case 'PermissionRequest':
       return STATES.NEEDS_INPUT
     case 'Notification':
-      return payload.notification_type === 'permission_prompt' ? STATES.NEEDS_INPUT : null
+      // Claude needs you: waiting for permission, or you've gone idle mid-session.
+      return payload.notification_type === 'permission_prompt' ||
+        payload.notification_type === 'idle_prompt'
+        ? STATES.NEEDS_INPUT
+        : null
     case 'Stop':
       return STATES.DONE
     default:

@@ -657,6 +657,20 @@ git commit -m "feat: localhost HTTP status listener (POST /hook)"
 
 ## Task 7: Hook installer — additive settings.json edits (TDD)
 
+> **CORRECTION (verified during implementation):** Claude Code has **no native `http` hook
+> type** — it uses `type: "command"`. The blocks below showing `{ type: 'http', url, async }`
+> are superseded. The shipped implementation uses a command hook that pipes the event JSON
+> (received on stdin) to the listener via curl:
+> ```js
+> function group(url) {
+>   return { hooks: [{ type: 'command',
+>     command: `curl -s -X POST -H 'Content-Type: application/json' --data-binary @- ${url}` }] }
+> }
+> ```
+> Idempotency/uninstall match our hook by the URL substring inside `command` (not an `h.url`
+> field). Tests assert `h.type === 'command' && h.command.includes(url)`. Verified end-to-end:
+> the exact curl string forwards stdin JSON → listener parses `hook_event_name` → correct state.
+
 **Files:**
 - Create: `src/main/hook-installer.js`
 - Test: `test/hook-installer.test.js`

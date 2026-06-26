@@ -14,9 +14,10 @@ test('PermissionRequest maps to NEEDS_INPUT', () => {
   assert.strictEqual(mapEvent('PermissionRequest', {}), 'NEEDS_INPUT')
 })
 
-test('Notification maps to NEEDS_INPUT only for permission_prompt', () => {
+test('Notification maps to NEEDS_INPUT for permission_prompt and idle_prompt, not others', () => {
   assert.strictEqual(mapEvent('Notification', { notification_type: 'permission_prompt' }), 'NEEDS_INPUT')
-  assert.strictEqual(mapEvent('Notification', { notification_type: 'idle_prompt' }), null)
+  assert.strictEqual(mapEvent('Notification', { notification_type: 'idle_prompt' }), 'NEEDS_INPUT')
+  assert.strictEqual(mapEvent('Notification', { notification_type: 'auth_success' }), null)
 })
 
 test('Stop maps to DONE', () => {

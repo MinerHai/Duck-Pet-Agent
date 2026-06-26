@@ -54,8 +54,8 @@ Everything in scope serves this script; anything off it is post-MVP.
 ## 4. Architecture
 
 ```
-Claude Code  ──hook(http)──►  POST localhost:PORT/hook  ──►  Electron main
-   (event)                    (UserPromptSubmit/Stop/...)      │
+Claude Code  ─hook(command:curl)─►  POST localhost:4242/hook  ─►  Electron main
+   (event on stdin)            (UserPromptSubmit/Stop/...)         │
                                                                ▼
                                                         State Machine
                                                   (IDLE→WORKING→NEEDS_INPUT→DONE→MISCHIEF)
@@ -66,12 +66,14 @@ Claude Code  ──hook(http)──►  POST localhost:PORT/hook  ──►  Ele
                                     meme popup, animation)                  window nudge)
 ```
 
-Flow: Claude Code emits a hook event → the hook (native `http` type) POSTs the event JSON
-to a small HTTP listener inside the Electron main process → the State Machine updates →
-the Overlay renderer animates the duck and the Effects module triggers physical mischief.
+Flow: Claude Code emits a hook event → a `type: "command"` hook receives the event JSON on
+stdin and `curl`s it to a small HTTP listener inside the Electron main process → the State
+Machine updates → the Overlay renderer animates the duck and the Effects module triggers
+physical mischief.
 
-We use the native Claude Code `http` hook type (POST JSON directly) rather than a
-`curl`/`jq` command hook — fewer shell failure modes, more real-time, cross-platform.
+We use a Claude Code `command` hook that pipes stdin to the listener via `curl`
+(`--data-binary @-`). The HTTP-listener architecture is unchanged; only the hook entry is a
+command, not a (non-existent) native `http` type — see §6.
 
 ## 5. Components
 
@@ -122,29 +124,37 @@ Hook event names and semantics confirmed against
 | Pet State | Hook events | Notes |
 |---|---|---|
 | `WORKING` | `UserPromptSubmit`, `PreToolUse` | `PreToolUse` is blocking → flips to WORKING *before* the tool runs (smoother). |
-| `NEEDS_INPUT` | `Notification` (matcher `permission_prompt`), `PermissionRequest` | Claude paused awaiting permission/input. |
+| `NEEDS_INPUT` | `Notification` (`notification_type` = `permission_prompt` or `idle_prompt`), `PermissionRequest` | Claude paused awaiting permission/input. We filter on `notification_type` in code (the `Notification` event itself always fires; matchers aren't used for it). |
 | `DONE` | `Stop` | Claude's turn ended → celebrate, then decay to `IDLE_ROAM`. |
 
 ### Hook config (additive, alongside existing AgentPet hooks)
+
+> **Corrected (verified against the live AgentPet hooks in `~/.claude/settings.json` + the
+> official docs):** Claude Code uses **`type: "command"`** hooks, not a native `http` type.
+> The command receives the event JSON on **stdin** (including `hook_event_name`), which we
+> forward verbatim to the listener with `curl --data-binary @-`. This is the proven format
+> on this machine; an `http` hook type is unconfirmed and was not used.
 
 ```json
 {
   "hooks": {
     "UserPromptSubmit": [
-      { "matcher": "*", "hooks": [
-        { "type": "http", "url": "http://localhost:PORT/hook", "async": true } ] }
+      { "hooks": [
+        { "type": "command",
+          "command": "curl -s -X POST -H 'Content-Type: application/json' --data-binary @- http://127.0.0.1:4242/hook" } ] }
     ],
-    "PreToolUse": [ /* same http hook */ ],
-    "Notification": [ /* same http hook */ ],
-    "PermissionRequest": [ /* same http hook */ ],
-    "Stop": [ /* same http hook */ ]
+    "PreToolUse":        [ /* same command hook */ ],
+    "Notification":      [ /* same command hook */ ],
+    "PermissionRequest": [ /* same command hook */ ],
+    "Stop":              [ /* same command hook */ ]
   }
 }
 ```
 
-Hooks use `async: true` so they never block Claude's turn. The hook POSTs the full event
-JSON (including `hook_event_name`, `session_id`, `cwd`, and for `Notification` a
-`notification_type`) which the Status Listener parses.
+The Status Listener parses `hook_event_name` from the posted JSON and, for `Notification`,
+`notification_type` (`permission_prompt` / `idle_prompt` → NEEDS_INPUT). The listener is
+already running on `localhost:4242`; if the app is down, `curl` fails fast (connection
+refused) and Claude's turn is unaffected.
 
 > De-risk note: AgentPet is already installed on this machine and its hooks fire over the
 > same events, so the "read Claude Code status" path is already proven here. DuckClaude

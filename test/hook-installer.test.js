@@ -15,15 +15,17 @@ function tmpSettings(initial) {
 
 const URL = 'http://127.0.0.1:4242/hook'
 
-test('installHooks adds an http hook for every DuckClaude event', () => {
+test('installHooks adds a command hook (curl) for every DuckClaude event', () => {
   const p = tmpSettings({})
   installHooks({ settingsPath: p, url: URL })
   const cfg = JSON.parse(fs.readFileSync(p, 'utf8'))
   for (const ev of HOOK_EVENTS) {
     const groups = cfg.hooks[ev]
     assert.ok(Array.isArray(groups), `missing ${ev}`)
-    const ours = groups.some((g) => g.hooks.some((h) => h.url === URL))
-    assert.ok(ours, `no DuckClaude hook in ${ev}`)
+    const ours = groups.some((g) =>
+      g.hooks.some((h) => h.type === 'command' && h.command.includes(URL)),
+    )
+    assert.ok(ours, `no DuckClaude command hook in ${ev}`)
   }
 })
 
@@ -32,7 +34,7 @@ test('installHooks is idempotent (no duplicates on second run)', () => {
   installHooks({ settingsPath: p, url: URL })
   installHooks({ settingsPath: p, url: URL })
   const cfg = JSON.parse(fs.readFileSync(p, 'utf8'))
-  const count = cfg.hooks.Stop.filter((g) => g.hooks.some((h) => h.url === URL)).length
+  const count = cfg.hooks.Stop.filter((g) => g.hooks.some((h) => (h.command || '').includes(URL))).length
   assert.strictEqual(count, 1)
 })
 
@@ -49,7 +51,7 @@ test('uninstallHooks removes only DuckClaude hooks, keeps others', () => {
   installHooks({ settingsPath: p, url: URL })
   uninstallHooks({ settingsPath: p, url: URL })
   const cfg = JSON.parse(fs.readFileSync(p, 'utf8'))
-  const ours = cfg.hooks.Stop.some((g) => g.hooks.some((h) => h.url === URL))
+  const ours = cfg.hooks.Stop.some((g) => g.hooks.some((h) => (h.command || '').includes(URL)))
   const hasAgentPet = cfg.hooks.Stop.some((g) => g.hooks.some((h) => h.command === 'agentpet-hook'))
   assert.strictEqual(ours, false)
   assert.ok(hasAgentPet)

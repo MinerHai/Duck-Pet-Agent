@@ -47,7 +47,7 @@ curl -s -X POST http://127.0.0.1:4242/hook -d '{"hook_event_name":"Stop"}'      
 ## How it works
 
 ```
-Claude Code ──hook(http POST)──► localhost:4242/hook ──► StateMachine ──► overlay + effects
+Claude Code ─hook (command: curl POST)─► localhost:4242/hook ─► StateMachine ─► overlay + effects
 ```
 
 - **Status listener** — a tiny HTTP server in the Electron main process receives Claude Code

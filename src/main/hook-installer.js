@@ -22,8 +22,22 @@ function writeSettings(settingsPath, cfg) {
   fs.writeFileSync(settingsPath, JSON.stringify(cfg, null, 2))
 }
 
+// Claude Code only supports `type: "command"` hooks (verified against the live, working
+// AgentPet hooks in ~/.claude/settings.json and the official docs). The command receives
+// the event JSON on stdin (including `hook_event_name`); we pipe it verbatim to our local
+// listener with curl. `--data-binary @-` forwards stdin without altering the JSON.
+function hookCommand(url) {
+  return `curl -s -X POST -H 'Content-Type: application/json' --data-binary @- ${url}`
+}
+
 function group(url) {
-  return { matcher: '*', hooks: [{ type: 'http', url, async: true }] }
+  return { hooks: [{ type: 'command', command: hookCommand(url) }] }
+}
+
+// Identify *our* hook (for idempotency + clean uninstall) by the listener URL embedded in
+// the command — never matches another tool's hook (e.g. AgentPet's binary path).
+function isOurs(g, url) {
+  return (g.hooks || []).some((h) => typeof h.command === 'string' && h.command.includes(url))
 }
 
 function installHooks({ settingsPath = defaultSettingsPath(), url }) {
@@ -31,8 +45,7 @@ function installHooks({ settingsPath = defaultSettingsPath(), url }) {
   cfg.hooks = cfg.hooks || {}
   for (const ev of HOOK_EVENTS) {
     cfg.hooks[ev] = cfg.hooks[ev] || []
-    const exists = cfg.hooks[ev].some((g) => (g.hooks || []).some((h) => h.url === url))
-    if (!exists) cfg.hooks[ev].push(group(url))
+    if (!cfg.hooks[ev].some((g) => isOurs(g, url))) cfg.hooks[ev].push(group(url))
   }
   writeSettings(settingsPath, cfg)
 }
@@ -42,7 +55,7 @@ function uninstallHooks({ settingsPath = defaultSettingsPath(), url }) {
   if (!cfg.hooks) return
   for (const ev of HOOK_EVENTS) {
     if (!Array.isArray(cfg.hooks[ev])) continue
-    cfg.hooks[ev] = cfg.hooks[ev].filter((g) => !(g.hooks || []).some((h) => h.url === url))
+    cfg.hooks[ev] = cfg.hooks[ev].filter((g) => !isOurs(g, url))
     if (cfg.hooks[ev].length === 0) delete cfg.hooks[ev]
   }
   writeSettings(settingsPath, cfg)
