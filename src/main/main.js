@@ -36,6 +36,9 @@ let currentDisplayId = null // which display the overlay currently sits on
 let displayFollowTimer = null // relocates the overlay to your active monitor
 let lastProject = '' // basename of the most recent agent cwd, for notifications
 let grabbing = false // a NabMouse cursor drag is in progress
+let agentState = 'IDLE_ROAM' // latest Claude state, shown in the menu
+let lastActivity = '' // latest live working activity (from tool_name)
+let stateSinceMs = Date.now() // when the current state began (for elapsed in the menu)
 
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json')
 
@@ -185,8 +188,13 @@ function handleAgentEvent(name, payload) {
   if (payload.cwd) {
     lastProject = String(payload.cwd).split('/').filter(Boolean).pop() || lastProject
   }
-  if (name === 'UserPromptSubmit') send('activity', 'Thinking…')
-  else if (name === 'PreToolUse') send('activity', claude.formatActivity(payload.tool_name, payload.tool_input))
+  if (name === 'UserPromptSubmit') {
+    lastActivity = 'Thinking…'
+    send('activity', lastActivity)
+  } else if (name === 'PreToolUse') {
+    lastActivity = claude.formatActivity(payload.tool_name, payload.tool_input)
+    send('activity', lastActivity)
+  }
 
   if (name === 'Stop' && payload.transcript_path &&
       claude.looksLikeQuestion(claude.lastAssistantText(payload.transcript_path))) {
@@ -209,24 +217,57 @@ function toggleChaos() {
   applySettings()
 }
 
-// Right-click menu on the pet (same actions as the tray).
-function buildContextMenu() {
-  return Menu.buildFromTemplate([
-    { label: '🦆 DuckClaude', enabled: false },
+// agentpet-style menu: a live status header + the controls. Used by both the menu-bar
+// (tray) dropdown and the right-click menu on the pet.
+const STATE_LABEL = {
+  WORKING: '🔵 Working',
+  NEEDS_INPUT: '🟠 Needs your input',
+  DONE: '🟢 Done',
+  MISCHIEF: '🦆 Causing chaos',
+  IDLE_ROAM: '⚪️ Idle',
+}
+function elapsedStr() {
+  const sec = Math.max(0, Math.round((Date.now() - stateSinceMs) / 1000))
+  return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`
+}
+function buildMenu() {
+  const items = [{ label: STATE_LABEL[agentState] || '⚪️ Idle', enabled: false }]
+  if (agentState === 'WORKING' && lastActivity) items.push({ label: `    ${lastActivity}`, enabled: false })
+  items.push({ label: `    ${lastProject || 'Claude Code'} · ${elapsedStr()}`, enabled: false })
+  items.push(
     { type: 'separator' },
     { label: 'Settings…', click: () => openSettingsWindow() },
-    { label: settings.chaos.enabled ? '✓ Chaos enabled' : 'Chaos disabled', click: () => toggleChaos() },
+    {
+      label: 'Chaos',
+      submenu: [
+        { label: 'Enable chaos', type: 'checkbox', checked: settings.chaos.enabled, click: () => toggleChaos() },
+      ],
+    },
+    { label: 'Open Memes Folder', click: () => dirs && shell.openPath(dirs.memesDir) },
+    { label: 'Open Notes Folder', click: () => dirs && shell.openPath(dirs.notesDir) },
     { type: 'separator' },
     { label: 'Quit DuckClaude', click: () => app.quit() },
-  ])
+  )
+  return Menu.buildFromTemplate(items)
+}
+
+function refreshTray() {
+  if (!tray) return
+  tray.setContextMenu(buildMenu())
+  tray.setTitle(agentState === 'NEEDS_INPUT' ? '🦆❗' : '🦆') // flag when Claude needs you
 }
 
 function onState(s) {
   send('state', s)
+  if (s !== agentState) {
+    agentState = s
+    stateSinceMs = Date.now()
+  }
   if (s !== lastFeedbackState) {
     notify(s) // notify only on real transitions
     lastFeedbackState = s
   }
+  refreshTray() // keep the menu-bar status fresh
 
   if (s === 'NEEDS_INPUT') {
     relocateToDisplay(cursorDisplay()) // hop to the monitor your cursor is on, then chase it
@@ -307,15 +348,11 @@ app.whenReady().then(() => {
     if (overlay && !overlay.isDestroyed()) overlay.setIgnoreMouseEvents(!on, { forward: true })
   })
   ipcMain.on('show-menu', () => {
-    if (overlay && !overlay.isDestroyed()) buildContextMenu().popup({ window: overlay })
+    if (overlay && !overlay.isDestroyed()) buildMenu().popup({ window: overlay })
   })
 
-  tray = createTray({
-    getChaos: () => settings.chaos.enabled,
-    onToggleChaos: () => toggleChaos(),
-    onSettings: () => openSettingsWindow(),
-    onQuit: () => app.quit(),
-  })
+  tray = createTray()
+  refreshTray() // build the status menu + title
 
   // Follow the active monitor while idle (don't yank mid-chase).
   displayFollowTimer = setInterval(() => {
