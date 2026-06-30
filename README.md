@@ -63,9 +63,21 @@ Claude Code ─hook (command: curl POST)─► localhost:4242/hook ─► StateM
 | Hook event | State | Duck |
 |---|---|---|
 | `UserPromptSubmit`, `PreToolUse` | WORKING | paces with ⌨️ |
-| `Notification` (permission), `PermissionRequest` | NEEDS_INPUT | runs to cursor + HONK! |
+| `Notification` (permission/idle), `PermissionRequest` | NEEDS_INPUT | runs to cursor + HONK!, then **drags your cursor toward the terminal** so you go answer Claude |
 | `Stop` | DONE | confetti |
-| _(idle 20–40s)_ | MISCHIEF | footprints / meme / window nudge |
+| _(idle 20–40s)_ | MISCHIEF | picks a goose antic from a shuffle bag (see below) |
+
+### Goose antics (faithful to the real Desktop Goose)
+
+When bored (and Chaos enabled), the duck deals an antic from a weighted **shuffle bag**
+(`mud ×2, gift ×2, nudge ×1, nab ×3`) over your enabled toggles — so you get variety, not
+streaks:
+
+- **Mud run** — a ~2s amok dash leaving a muddy footprint trail (each print fades over ~8.5s).
+- **Gift** — delivers a random meme image *or* a goose-style note as a **real window you have
+  to close**. Slam it shut too fast and the duck retaliates by grabbing your cursor.
+- **Window nudge** — shoves the frontmost window *(macOS)*.
+- **Random nab** — grabs your cursor *(macOS; only if "Random attacks" is on)*.
 
 ## Settings & customization
 
