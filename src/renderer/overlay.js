@@ -1,4 +1,6 @@
 'use strict'
+// Procedural duck rig + animation, faithful to DesktopGoose (TheGoose.cs), themed yellow.
+const R = window.Rig
 
 const canvas = document.getElementById('stage')
 const ctx = canvas.getContext('2d')
@@ -9,6 +11,8 @@ function resize() {
 resize()
 window.addEventListener('resize', resize)
 
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
+
 let SETTINGS = {
   duckSize: 54,
   soundEnabled: true,
@@ -16,65 +20,149 @@ let SETTINGS = {
   chaos: { enabled: false, footprints: true },
 }
 
+// Goose speed tiers: { speed px/s, accel px/s², step seconds }
+const TIERS = {
+  walk: { speed: 80, accel: 1300, step: 0.2 },
+  run: { speed: 200, accel: 1300, step: 0.2 },
+  charge: { speed: 400, accel: 2300, step: 0.1 },
+}
+
 const duck = {
   x: window.innerWidth / 2,
   y: window.innerHeight / 2,
+  vx: 0,
+  vy: 0,
+  dir: 0, // facing, degrees
+  neck: 0, // neckLerpPercent (0 idle → 1 running)
   tx: window.innerWidth / 2,
   ty: window.innerHeight / 2,
-  speed: 2.2,
   state: 'IDLE_ROAM',
-  bob: 0,
+  tier: 'walk',
+  pauseUntil: 0, // wander pause (performance.now ms)
+  mudUntil: 0, // run-amok window
 }
 
-function pickRoamTarget() {
-  duck.tx = 60 + Math.random() * (window.innerWidth - 120)
-  duck.ty = 60 + Math.random() * (window.innerHeight - 120)
+// Gait: two feet, one steps at a time.
+const feet = {
+  l: { x: duck.x, y: duck.y, moveStart: -1, origin: null, dir: null },
+  r: { x: duck.x, y: duck.y, moveStart: -1, origin: null, dir: null },
 }
-setInterval(() => {
-  if (duck.state === 'IDLE_ROAM') pickRoamTarget()
-}, 2500)
 
-// --- Footprints (gated by chaos settings) ---
-// Goose-accurate: each print lives ~8.5s then fades over ~1s.
-const FP_TICK = 300
-const FP_LIFE = Math.round(8500 / FP_TICK) // ~28 ticks ≈ 8.4s
-const FP_FADE = Math.round(1000 / FP_TICK) // last ~3 ticks fade out
-let prints = []
-let mudRunUntil = 0 // performance.now() ms; while in the future, the duck runs amok
-setInterval(() => {
-  const on = SETTINGS.chaos && SETTINGS.chaos.enabled && SETTINGS.chaos.footprints
-  if (on && (duck.state === 'IDLE_ROAM' || duck.state === 'MISCHIEF')) {
-    prints.push({ x: duck.x, y: duck.y + SETTINGS.duckSize / 2, life: FP_LIFE })
-  }
-  prints.forEach((p) => (p.life -= 1))
-  prints = prints.filter((p) => p.life > 0)
-}, FP_TICK)
-
-// --- DONE celebration: short-lived confetti ---
+let cursor = { x: duck.x, y: duck.y } // streamed from main during NEEDS_INPUT
+let footMarks = [] // { x, y, t } in performance.now ms
 let confetti = []
-function spawnConfetti() {
-  confetti = Array.from({ length: 40 }, () => ({
-    x: duck.x,
-    y: duck.y,
-    vx: (Math.random() - 0.5) * 6,
-    vy: -Math.random() * 6 - 2,
-    c: `hsl(${Math.random() * 360},90%,60%)`,
-    life: 60,
-  }))
-}
-function drawConfetti() {
-  for (const p of confetti) {
-    p.x += p.vx
-    p.y += p.vy
-    p.vy += 0.2
-    p.life -= 1
-    ctx.fillStyle = p.c
-    ctx.fillRect(p.x, p.y, 5, 5)
+let lastT = performance.now()
+
+// Frame-rate-independent smoothing: a per-frame rate calibrated at 120fps.
+const smooth = (rate, dt) => 1 - Math.pow(1 - rate, dt * 120)
+
+// ---- Goal: pick tier + target for the current state. Returns true if pausing. ----
+function updateGoal(nowMs) {
+  if (duck.state === 'NEEDS_INPUT') {
+    duck.tier = 'charge'
+    duck.tx = cursor.x
+    duck.ty = cursor.y
+    return false
   }
-  confetti = confetti.filter((p) => p.life > 0)
+  duck.tier = nowMs < duck.mudUntil ? 'run' : 'walk'
+  const reached = Math.hypot(duck.tx - duck.x, duck.ty - duck.y) < 20
+  if (reached) {
+    if (!duck.pauseUntil) duck.pauseUntil = nowMs + 1000 + Math.random() * 1000 // 1–2s
+    if (nowMs < duck.pauseUntil) return true
+    duck.pauseUntil = 0
+    const t = R.pickWanderTarget(
+      duck,
+      { w: window.innerWidth, h: window.innerHeight },
+      TIERS[duck.tier].speed,
+      Math.random,
+    )
+    duck.tx = t.x
+    duck.ty = t.y
+  }
+  return false
 }
 
-// --- Honk (WebAudio, no asset needed) ---
+// ---- Physics (port of TheGoose.Tick) ----
+function physics(dt, nowMs) {
+  const paused = updateGoal(nowMs)
+  const tier = TIERS[duck.tier]
+  const toTarget = { x: duck.tx - duck.x, y: duck.ty - duck.y }
+
+  if (Math.hypot(toTarget.x, toTarget.y) > 1) {
+    duck.dir = R.lerpHeadingDeg(duck.dir, R.norm(toTarget), smooth(0.25, dt))
+  }
+
+  if (paused) {
+    duck.vx = 0
+    duck.vy = 0
+  } else {
+    const sp = Math.hypot(duck.vx, duck.vy)
+    if (sp > tier.speed) {
+      const n = tier.speed / sp
+      duck.vx *= n
+      duck.vy *= n
+    }
+    const tdir = R.norm(toTarget)
+    duck.vx += tdir.x * tier.accel * dt
+    duck.vy += tdir.y * tier.accel * dt
+    duck.x += duck.vx * dt
+    duck.y += duck.vy * dt
+  }
+
+  const running = tier.speed >= 200 || duck.state === 'NEEDS_INPUT'
+  duck.neck = R.lerp(duck.neck, running ? 1 : 0, smooth(0.075, dt))
+
+  solveFeet(nowMs, tier.step)
+}
+
+// ---- Gait (port of TheGoose.SolveFeet) ----
+function solveFeet(nowMs, stepTime) {
+  const rig = R.computeRig({ x: duck.x, y: duck.y, dir: duck.dir, neckLerp: duck.neck })
+  const homes = { l: rig.footHomeL, r: rig.footHomeR }
+  const idle = feet.l.moveStart < 0 && feet.r.moveStart < 0
+  if (idle) {
+    // Step whichever foot lags farther from its home — prevents one foot starving
+    // (and being left behind) when the duck changes direction.
+    const dL = Math.hypot(feet.l.x - homes.l.x, feet.l.y - homes.l.y)
+    const dR = Math.hypot(feet.r.x - homes.r.x, feet.r.y - homes.r.y)
+    if (dL > 5 || dR > 5) {
+      if (dL >= dR) startStep(feet.l, homes.l, nowMs)
+      else startStep(feet.r, homes.r, nowMs)
+    }
+  } else if (feet.l.moveStart >= 0) {
+    stepFoot(feet.l, homes.l, nowMs, stepTime)
+  } else if (feet.r.moveStart >= 0) {
+    stepFoot(feet.r, homes.r, nowMs, stepTime)
+  }
+}
+function startStep(foot, home, nowMs) {
+  foot.origin = { x: foot.x, y: foot.y }
+  foot.dir = R.norm({ x: home.x - foot.x, y: home.y - foot.y })
+  foot.moveStart = nowMs
+}
+function stepFoot(foot, home, nowMs, stepTime) {
+  const target = R.footStepTarget(home, foot.dir) // overshoot +2px
+  const p = (nowMs - foot.moveStart) / (stepTime * 1000)
+  if (p >= 1) {
+    foot.x = target.x
+    foot.y = target.y
+    foot.moveStart = -1
+    onFootLand(foot, nowMs)
+  } else {
+    const e = R.cubicEaseInOut(p)
+    foot.x = R.lerp(foot.origin.x, target.x, e)
+    foot.y = R.lerp(foot.origin.y, target.y, e)
+  }
+}
+function onFootLand(foot, nowMs) {
+  const mudOn = SETTINGS.chaos && SETTINGS.chaos.enabled && SETTINGS.chaos.footprints
+  if (mudOn && (duck.state === 'IDLE_ROAM' || duck.state === 'MISCHIEF')) {
+    footMarks.push({ x: foot.x, y: foot.y, t: nowMs })
+    if (footMarks.length > 64) footMarks.shift()
+  }
+}
+
+// ---- Honk (WebAudio, no asset) ----
 const AudioCtx = window.AudioContext || window.webkitAudioContext
 const audioCtx = AudioCtx ? new AudioCtx() : null
 function honk() {
@@ -95,85 +183,133 @@ function honk() {
   o.stop(t + 0.26)
 }
 
-// --- Gift popup (meme image or note text) ---
-const giftEl = document.getElementById('gift')
-const giftImg = document.getElementById('giftImg')
-const giftNote = document.getElementById('giftNote')
-let giftTimer = null
-function showGift(g) {
-  clearTimeout(giftTimer)
-  giftEl.style.left = Math.min(window.innerWidth - 230, Math.max(10, duck.x - 100)) + 'px'
-  giftEl.style.top = Math.max(10, duck.y - 170) + 'px'
-  if (g.type === 'meme') {
-    giftImg.src = g.src
-    giftImg.hidden = false
-    giftNote.hidden = true
-  } else {
-    giftNote.textContent = g.text
-    giftNote.hidden = false
-    giftImg.hidden = true
+function spawnConfetti() {
+  confetti = Array.from({ length: 40 }, () => ({
+    x: duck.x,
+    y: duck.y - 30,
+    vx: (Math.random() - 0.5) * 6,
+    vy: -Math.random() * 6 - 2,
+    c: `hsl(${Math.random() * 360},90%,60%)`,
+    life: 60,
+  }))
+}
+function drawConfetti() {
+  for (const p of confetti) {
+    p.x += p.vx
+    p.y += p.vy
+    p.vy += 0.2
+    p.life -= 1
+    ctx.fillStyle = p.c
+    ctx.fillRect(p.x, p.y, 5, 5)
   }
-  giftEl.hidden = false
-  giftTimer = setTimeout(() => {
-    giftEl.hidden = true
-  }, 4000)
+  confetti = confetti.filter((p) => p.life > 0)
 }
 
-// --- Main loop ---
-function step() {
-  const running = performance.now() < mudRunUntil
-  duck.speed = running ? 5.5 : 2.2
-  const dx = duck.tx - duck.x
-  const dy = duck.ty - duck.y
-  const dist = Math.hypot(dx, dy)
-  const moving = dist > 2
-  if (running && dist < 30) pickRoamTarget() // run amok: dart to a fresh spot
-  if (moving) {
-    duck.x += (dx / dist) * duck.speed
-    duck.y += (dy / dist) * duck.speed
-  }
-  duck.bob += moving ? 0.25 : 0.06
+// ---- Render (port of TheGoose.Render), duck-themed ----
+const COL = { body: '#FFD93D', edge: '#E0A92A', beak: '#FF8C00', eye: '#1a1a1a', mud: '#5b3a1a' }
 
+function draw(nowMs) {
   ctx.clearRect(0, 0, canvas.width, canvas.height)
+  const S = (SETTINGS.duckSize || 54) / 40
+  const P = { x: duck.x, y: duck.y }
 
-  for (const p of prints) {
-    ctx.globalAlpha = 0.45 * Math.min(1, p.life / FP_FADE)
-    ctx.fillStyle = '#5b3a1a'
+  // footmarks (world space; hold 8.5s then fade over 1s)
+  for (const m of footMarks) {
+    const fade = 1 - clamp((nowMs - (m.t + 8500)) / 1000, 0, 1)
+    const rad = 3 * S * fade
+    if (rad <= 0) continue
+    ctx.globalAlpha = 0.5 * fade
+    ctx.fillStyle = COL.mud
     ctx.beginPath()
-    ctx.ellipse(p.x, p.y, 6, 4, 0, 0, Math.PI * 2)
+    ctx.ellipse(m.x, m.y, rad, rad * 0.7, 0, 0, Math.PI * 2)
     ctx.fill()
   }
   ctx.globalAlpha = 1
 
-  const bobY = Math.sin(duck.bob) * (moving ? 5 : 2)
+  const rig = R.computeRig({ x: P.x, y: P.y, dir: duck.dir, neckLerp: duck.neck })
+
   ctx.save()
-  ctx.translate(duck.x, duck.y + bobY)
-  if (duck.state === 'NEEDS_INPUT') {
-    ctx.font = '20px sans-serif'
-    ctx.textAlign = 'center'
-    ctx.fillStyle = '#ff5252'
-    ctx.fillText('HONK!', 0, -(SETTINGS.duckSize * 0.7))
-    const pulse = 1 + Math.sin(duck.bob * 2) * 0.12
-    ctx.scale(pulse, pulse)
-  } else if (duck.state === 'WORKING') {
-    ctx.font = '20px sans-serif'
-    ctx.textAlign = 'center'
-    ctx.fillText('⌨️', SETTINGS.duckSize * 0.4, -(SETTINGS.duckSize * 0.5))
+  ctx.translate(P.x, P.y)
+  ctx.scale(S, S)
+  ctx.translate(-P.x, -P.y)
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+
+  const line = (a, b, w, c) => {
+    ctx.strokeStyle = c
+    ctx.lineWidth = w
+    ctx.beginPath()
+    ctx.moveTo(a.x, a.y)
+    ctx.lineTo(b.x, b.y)
+    ctx.stroke()
   }
-  if (dx < 0) ctx.scale(-1, 1)
-  ctx.font = SETTINGS.duckSize + 'px serif'
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
-  ctx.fillText('🦆', 0, 0)
+  const dot = (p, r, c) => {
+    ctx.fillStyle = c
+    ctx.beginPath()
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  dot(feet.l, 4, COL.beak)
+  dot(feet.r, 4, COL.beak)
+
+  ctx.fillStyle = 'rgba(0,0,0,0.18)'
+  ctx.beginPath()
+  ctx.ellipse(P.x, P.y, 20, 15, 0, 0, Math.PI * 2)
+  ctx.fill()
+
+  // outline pass (edge)
+  line(rig.bodyA, rig.bodyB, 24, COL.edge)
+  line(rig.neckBase, rig.neckHeadPoint, 15, COL.edge)
+  line(rig.neckHeadPoint, rig.head1End, 17, COL.edge)
+  line(rig.head1End, rig.head2End, 12, COL.edge)
+  line(rig.underA, rig.underB, 15, COL.edge)
+  // fill pass (body)
+  line(rig.bodyA, rig.bodyB, 22, COL.body)
+  line(rig.neckBase, rig.neckHeadPoint, 13, COL.body)
+  line(rig.neckHeadPoint, rig.head1End, 15, COL.body)
+  line(rig.head1End, rig.head2End, 10, COL.body)
+  // beak
+  line(rig.head2End, rig.beakTip, 9, COL.beak)
+  // eyes
+  dot(rig.eyeL, 2, COL.eye)
+  dot(rig.eyeR, 2, COL.eye)
+
   ctx.restore()
 
+  // state overlays (world space, above the head)
+  const headY = P.y + (rig.head2End.y - P.y) * S
+  if (duck.state === 'NEEDS_INPUT') {
+    ctx.fillStyle = '#ff5252'
+    ctx.font = `bold ${Math.round(16 * S)}px sans-serif`
+    ctx.textAlign = 'center'
+    ctx.fillText('HONK!', P.x, headY - 16 * S)
+  } else if (duck.state === 'WORKING') {
+    ctx.font = `${Math.round(16 * S)}px sans-serif`
+    ctx.textAlign = 'center'
+    ctx.fillText('⌨️', P.x + 18 * S, headY - 6 * S)
+  }
   if (duck.state === 'DONE') drawConfetti()
-
-  requestAnimationFrame(step)
 }
-step()
 
-// --- Bridge from main process ---
+// ---- Main loop ----
+function frame() {
+  const now = performance.now()
+  let dt = (now - lastT) / 1000
+  lastT = now
+  if (dt > 0.1) dt = 0.1 // clamp big gaps (inactive tab)
+
+  physics(dt, now)
+  duck.x = clamp(duck.x, 40, window.innerWidth - 40)
+  duck.y = clamp(duck.y, 60, window.innerHeight - 20)
+  footMarks = footMarks.filter((m) => now < m.t + 9500)
+
+  draw(now)
+  requestAnimationFrame(frame)
+}
+requestAnimationFrame(frame)
+
+// ---- Bridge from main ----
 if (window.duckBridge) {
   let prev = duck.state
   window.duckBridge.onState((s) => {
@@ -183,16 +319,12 @@ if (window.duckBridge) {
     prev = s
   })
   window.duckBridge.onCursor((p) => {
-    if (duck.state === 'NEEDS_INPUT') {
-      duck.tx = p.x
-      duck.ty = p.y
-    }
+    cursor = p
   })
   window.duckBridge.onSettings((s) => {
     SETTINGS = s
   })
-  window.duckBridge.onGift((g) => showGift(g))
   window.duckBridge.onMud(() => {
-    mudRunUntil = performance.now() + 2000 // run amok for ~2s, like TrackMud
+    duck.mudUntil = performance.now() + 2000
   })
 }
