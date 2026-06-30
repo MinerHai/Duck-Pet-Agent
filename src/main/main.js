@@ -301,8 +301,6 @@ app.whenReady().then(() => {
       ? systemPreferences.isTrustedAccessibilityClient(false)
       : true,
   )
-  // The duck reached the cursor during NEEDS_INPUT → now grab & drag it toward the terminal.
-  ipcMain.on('reached-cursor', () => nab())
   // Hit-test toggle: the renderer reports when the cursor is over the duck so the overlay
   // can stop being click-through and receive a right-click.
   ipcMain.on('hover', (_e, on) => {

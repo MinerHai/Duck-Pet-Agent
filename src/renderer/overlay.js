@@ -54,7 +54,7 @@ let confetti = []
 let hearts = [] // petting hearts
 let petUntil = 0 // performance.now ms; while in the future the duck is being petted (holds still)
 let lastT = performance.now()
-let reachedFired = false // signalled main to grab the cursor this NEEDS_INPUT episode
+let acknowledged = false // petted → stop nagging/chasing until the next agent event
 
 // --- Speech bubble: makes the Claude interaction explicit (agentpet idea) ---
 const LINES = {
@@ -146,17 +146,11 @@ function updateGoal(nowMs) {
     duck.ty = duck.y
     return true
   }
-  if (duck.state === 'NEEDS_INPUT') {
-    if (reachedFired) {
-      // Reached & grabbed the cursor → settle here; stop chasing the (now-dragged) cursor.
-      duck.tier = 'walk'
-      duck.tx = duck.x
-      duck.ty = duck.y
-    } else {
-      duck.tier = 'charge'
-      duck.tx = cursor.x
-      duck.ty = cursor.y
-    }
+  // NEEDS_INPUT: chase the mouse cursor (running animation) until the user pets the duck.
+  if (duck.state === 'NEEDS_INPUT' && !acknowledged) {
+    duck.tier = 'charge'
+    duck.tx = cursor.x
+    duck.ty = cursor.y
     return false
   }
   duck.tier = nowMs < duck.mudUntil ? 'run' : 'walk'
@@ -209,12 +203,6 @@ function physics(dt, nowMs) {
     duck.vy += tdir.y * tier.accel * dt
     duck.x += duck.vx * dt
     duck.y += duck.vy * dt
-  }
-
-  // Reached the cursor during NEEDS_INPUT → ask main to grab it (once per episode).
-  if (duck.state === 'NEEDS_INPUT' && dist < 40 && !reachedFired) {
-    reachedFired = true
-    if (window.duckBridge && window.duckBridge.reachedCursor) window.duckBridge.reachedCursor()
   }
 
   const running = tier.speed >= 200 || duck.state === 'NEEDS_INPUT'
@@ -434,7 +422,12 @@ window.addEventListener('contextmenu', (e) => {
   if (hovering && window.duckBridge && window.duckBridge.showMenu) window.duckBridge.showMenu()
 })
 window.addEventListener('mousedown', (e) => {
-  if (e.button === 0 && hovering) spawnHearts() // left-click the duck = pet it (holds still)
+  if (e.button === 0 && hovering) {
+    acknowledged = true // petted → stop chasing & drop the nag
+    spawnHearts()
+    bubbleText = ''
+    bubbleUntil = 0
+  }
 })
 function updateHover() {
   if (!window.duckBridge || !window.duckBridge.setHover) return
@@ -470,7 +463,7 @@ if (window.duckBridge) {
   window.duckBridge.onState((s) => {
     if (s === 'DONE' && prev !== 'DONE') spawnConfetti()
     if (s === 'NEEDS_INPUT' && prev !== 'NEEDS_INPUT') honk()
-    if (s === 'NEEDS_INPUT') reachedFired = false
+    acknowledged = false // a new agent event re-engages the duck
     duck.state = s
     prev = s
     setBubbleForState(s, performance.now())
