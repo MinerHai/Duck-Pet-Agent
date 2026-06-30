@@ -19,12 +19,16 @@ tell application "System Events"
 end tell`
 }
 
-// Move the real cursor from `from` to `to` with easing. No-op if nut.js is unavailable.
-async function cursorGrab(from, to, steps = 24) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+// Move the real cursor from `from` to `to` with easing. `delayMs` between steps makes the
+// drag visible rather than an instant teleport. No-op if nut.js is unavailable.
+async function cursorGrab(from, to, steps = 24, delayMs = 0) {
   if (!nut) return false
   try {
     for (const p of easePath(from, to, steps)) {
       await nut.mouse.setPosition(new nut.Point(p.x, p.y))
+      if (delayMs > 0) await sleep(delayMs)
     }
     return true
   } catch {

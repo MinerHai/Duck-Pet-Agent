@@ -48,10 +48,89 @@ const feet = {
   r: { x: duck.x, y: duck.y, moveStart: -1, origin: null, dir: null },
 }
 
-let cursor = { x: duck.x, y: duck.y } // streamed from main during NEEDS_INPUT
+let cursor = { x: duck.x, y: duck.y } // streamed from main during NEEDS_INPUT (window-local)
 let footMarks = [] // { x, y, t } in performance.now ms
 let confetti = []
 let lastT = performance.now()
+let reachedFired = false // signalled main to grab the cursor this NEEDS_INPUT episode
+
+// --- Speech bubble: makes the Claude interaction explicit (agentpet idea) ---
+const LINES = {
+  WORKING: ['Thinking…', 'On it!', 'Crunching code…', 'Wiring it up…'],
+  NEEDS_INPUT: ['I need you! 👀', 'Your turn 👀', 'Psst, need input!', 'Awaiting orders…'],
+  DONE: ['All done! ✅', 'Ta-da!', 'Nailed it!', 'Mission complete!'],
+  IDLE_ROAM: ['Did you commit yet?', 'The build is quiet…', 'Tiny commit, tiny dopamine.', 'am duck, hjonk'],
+}
+const STATE_COLOR = {
+  WORKING: '#3B82F6',
+  NEEDS_INPUT: '#F59E0B',
+  DONE: '#21C45E',
+  IDLE_ROAM: '#9aa3ad',
+  MISCHIEF: '#9aa3ad',
+}
+let bubbleText = ''
+let bubbleUntil = 0 // performance.now ms; 0 = persist until state changes
+let activityText = '' // live WORKING activity from main (from tool_name)
+const pick = (a) => a[Math.floor(Math.random() * a.length)]
+
+function setBubbleForState(s, nowMs) {
+  if (s === 'WORKING') {
+    bubbleText = activityText || pick(LINES.WORKING)
+    bubbleUntil = 0
+  } else if (s === 'NEEDS_INPUT') {
+    bubbleText = pick(LINES.NEEDS_INPUT)
+    bubbleUntil = 0
+  } else if (s === 'DONE') {
+    bubbleText = pick(LINES.DONE)
+    bubbleUntil = nowMs + 3500
+  } else if (s === 'IDLE_ROAM') {
+    bubbleText = Math.random() < 0.4 ? pick(LINES.IDLE_ROAM) : ''
+    bubbleUntil = bubbleText ? nowMs + 4000 : 0
+  } else {
+    bubbleText = ''
+  }
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath()
+  ctx.moveTo(x + r, y)
+  ctx.arcTo(x + w, y, x + w, y + h, r)
+  ctx.arcTo(x + w, y + h, x, y + h, r)
+  ctx.arcTo(x, y + h, x, y, r)
+  ctx.arcTo(x, y, x + w, y, r)
+  ctx.closePath()
+}
+
+function drawBubble(nowMs, ax, ay, color, flash) {
+  if (bubbleUntil && nowMs > bubbleUntil) bubbleText = ''
+  if (!bubbleText) return
+  ctx.save()
+  ctx.font = '13px -apple-system, system-ui, sans-serif'
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'middle'
+  const padX = 10
+  const w = Math.min(280, ctx.measureText(bubbleText).width + padX * 2)
+  const h = 26
+  const x = Math.max(4, Math.min(canvas.width - w - 4, ax - w / 2))
+  const y = Math.max(4, ay - h - 12)
+  ctx.globalAlpha = flash ? 0.6 + 0.4 * Math.abs(Math.sin(nowMs / 300)) : 1
+  roundRect(x, y, w, h, 9)
+  ctx.fillStyle = 'rgba(255,255,255,0.96)'
+  ctx.fill()
+  ctx.lineWidth = 2
+  ctx.strokeStyle = color
+  ctx.stroke()
+  ctx.beginPath() // tail pointing down at the duck
+  ctx.moveTo(ax - 6, y + h)
+  ctx.lineTo(ax + 6, y + h)
+  ctx.lineTo(ax, y + h + 8)
+  ctx.closePath()
+  ctx.fillStyle = 'rgba(255,255,255,0.96)'
+  ctx.fill()
+  ctx.fillStyle = '#222'
+  ctx.fillText(bubbleText, x + padX, y + h / 2)
+  ctx.restore()
+}
 
 // Frame-rate-independent smoothing: a per-frame rate calibrated at 120fps.
 const smooth = (rate, dt) => 1 - Math.pow(1 - rate, dt * 120)
@@ -83,18 +162,25 @@ function updateGoal(nowMs) {
 }
 
 // ---- Physics (port of TheGoose.Tick) ----
+const ARRIVE = 24 // px: within this, brake instead of accelerate (no overshoot/turn-around)
+
 function physics(dt, nowMs) {
   const paused = updateGoal(nowMs)
   const tier = TIERS[duck.tier]
   const toTarget = { x: duck.tx - duck.x, y: duck.ty - duck.y }
+  const dist = Math.hypot(toTarget.x, toTarget.y)
 
-  if (Math.hypot(toTarget.x, toTarget.y) > 1) {
+  if (dist > 1) {
     duck.dir = R.lerpHeadingDeg(duck.dir, R.norm(toTarget), smooth(0.25, dt))
   }
 
-  if (paused) {
-    duck.vx = 0
-    duck.vy = 0
+  if (paused || dist < ARRIVE) {
+    // Brake: settle on the target and follow a moving cursor without flipping 180°.
+    const damp = Math.pow(0.001, dt) // frame-rate-independent heavy damping
+    duck.vx *= damp
+    duck.vy *= damp
+    duck.x += duck.vx * dt
+    duck.y += duck.vy * dt
   } else {
     const sp = Math.hypot(duck.vx, duck.vy)
     if (sp > tier.speed) {
@@ -107,6 +193,12 @@ function physics(dt, nowMs) {
     duck.vy += tdir.y * tier.accel * dt
     duck.x += duck.vx * dt
     duck.y += duck.vy * dt
+  }
+
+  // Reached the cursor during NEEDS_INPUT → ask main to grab it (once per episode).
+  if (duck.state === 'NEEDS_INPUT' && dist < 40 && !reachedFired) {
+    reachedFired = true
+    if (window.duckBridge && window.duckBridge.reachedCursor) window.duckBridge.reachedCursor()
   }
 
   const running = tier.speed >= 200 || duck.state === 'NEEDS_INPUT'
@@ -277,18 +369,9 @@ function draw(nowMs) {
 
   ctx.restore()
 
-  // state overlays (world space, above the head)
+  // speech bubble (world space, above the head) — makes the Claude interaction explicit
   const headY = P.y + (rig.head2End.y - P.y) * S
-  if (duck.state === 'NEEDS_INPUT') {
-    ctx.fillStyle = '#ff5252'
-    ctx.font = `bold ${Math.round(16 * S)}px sans-serif`
-    ctx.textAlign = 'center'
-    ctx.fillText('HONK!', P.x, headY - 16 * S)
-  } else if (duck.state === 'WORKING') {
-    ctx.font = `${Math.round(16 * S)}px sans-serif`
-    ctx.textAlign = 'center'
-    ctx.fillText('⌨️', P.x + 18 * S, headY - 6 * S)
-  }
+  drawBubble(nowMs, P.x, headY, STATE_COLOR[duck.state] || '#9aa3ad', duck.state === 'NEEDS_INPUT')
   if (duck.state === 'DONE') drawConfetti()
 }
 
@@ -315,8 +398,10 @@ if (window.duckBridge) {
   window.duckBridge.onState((s) => {
     if (s === 'DONE' && prev !== 'DONE') spawnConfetti()
     if (s === 'NEEDS_INPUT' && prev !== 'NEEDS_INPUT') honk()
+    if (s === 'NEEDS_INPUT') reachedFired = false
     duck.state = s
     prev = s
+    setBubbleForState(s, performance.now())
   })
   window.duckBridge.onCursor((p) => {
     cursor = p
@@ -326,5 +411,12 @@ if (window.duckBridge) {
   })
   window.duckBridge.onMud(() => {
     duck.mudUntil = performance.now() + 2000
+  })
+  window.duckBridge.onActivity((t) => {
+    activityText = t
+    if (duck.state === 'WORKING') {
+      bubbleText = t
+      bubbleUntil = 0
+    }
   })
 }

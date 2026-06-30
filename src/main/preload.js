@@ -7,4 +7,6 @@ contextBridge.exposeInMainWorld('duckBridge', {
   onSettings: (cb) => ipcRenderer.on('settings', (_e, s) => cb(s)),
   onGift: (cb) => ipcRenderer.on('gift', (_e, g) => cb(g)),
   onMud: (cb) => ipcRenderer.on('mud', () => cb()),
+  onActivity: (cb) => ipcRenderer.on('activity', (_e, t) => cb(t)),
+  reachedCursor: () => ipcRenderer.send('reached-cursor'),
 })

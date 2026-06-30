@@ -8,8 +8,10 @@ const {
   ipcMain,
   shell,
   systemPreferences,
+  Notification,
 } = require('electron')
 const { StateMachine } = require('./state-machine')
+const claude = require('./claude-activity')
 const { createListener } = require('./status-listener')
 const { installHooks, uninstallHooks } = require('./hook-installer')
 const { createTray } = require('./tray')
@@ -28,16 +30,30 @@ let cursorTimer = null
 let sm = null
 let dirs = null
 let settings = settingsStore.DEFAULTS
+let overlayOrigin = { x: 0, y: 0 } // top-left of the multi-display overlay (DIP)
+let lastProject = '' // basename of the most recent agent cwd, for notifications
+let grabbing = false // a NabMouse cursor drag is in progress
 
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json')
 
+// Bounding box of all displays (so the duck can roam across every monitor).
+function virtualBounds() {
+  const ds = screen.getAllDisplays()
+  const minX = Math.min(...ds.map((d) => d.bounds.x))
+  const minY = Math.min(...ds.map((d) => d.bounds.y))
+  const maxX = Math.max(...ds.map((d) => d.bounds.x + d.bounds.width))
+  const maxY = Math.max(...ds.map((d) => d.bounds.y + d.bounds.height))
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+}
+
 function createOverlay() {
-  const { width, height } = screen.getPrimaryDisplay().bounds
+  const vb = virtualBounds()
+  overlayOrigin = { x: vb.x, y: vb.y }
   overlay = new BrowserWindow({
-    x: 0,
-    y: 0,
-    width,
-    height,
+    x: vb.x,
+    y: vb.y,
+    width: vb.width,
+    height: vb.height,
     transparent: true,
     frame: false,
     resizable: false,
@@ -60,7 +76,10 @@ function send(channel, payload) {
 // While NEEDS_INPUT, stream the real cursor point so the duck runs to it.
 function startCursorStream() {
   stopCursorStream()
-  cursorTimer = setInterval(() => send('cursor', screen.getCursorScreenPoint()), 200)
+  cursorTimer = setInterval(() => {
+    const p = screen.getCursorScreenPoint()
+    send('cursor', { x: p.x - overlayOrigin.x, y: p.y - overlayOrigin.y }) // global → window-local
+  }, 120)
 }
 function stopCursorStream() {
   if (cursorTimer) {
@@ -109,13 +128,46 @@ function nextAntic() {
   return anticDeck.draw()
 }
 
-// Drag the real cursor toward a target (default: terminal area = bottom-centre), like
-// the goose's NabMouse. Gated by chaos + grabCursor; no-ops without Accessibility.
-function nab(target) {
-  if (!(settings.chaos.enabled && settings.chaos.grabCursor)) return
-  const from = screen.getCursorScreenPoint()
-  const { width, height } = screen.getPrimaryDisplay().bounds
-  effects.cursorGrab(from, target || { x: Math.round(width / 2), y: Math.round(height * 0.85) })
+// Drag the real cursor toward the terminal (bottom-centre of the cursor's display), like
+// the goose's NabMouse. Visible drag (delay between steps). Gated by chaos + grabCursor.
+async function nab(target) {
+  if (!(settings.chaos.enabled && settings.chaos.grabCursor) || grabbing) return
+  grabbing = true
+  try {
+    const from = screen.getCursorScreenPoint()
+    const b = screen.getDisplayNearestPoint(from).bounds
+    const to = target || { x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height * 0.85) }
+    await effects.cursorGrab(from, to, 24, 12) // ~0.3s visible drag
+  } finally {
+    grabbing = false
+  }
+}
+
+// Fire OS notifications only on the states that need you (agentpet: waiting/done).
+let lastFeedbackState = null
+function notify(s) {
+  if (!Notification.isSupported || !Notification.isSupported()) return
+  const proj = lastProject || 'Claude Code'
+  if (s === 'NEEDS_INPUT') new Notification({ title: `${proj} needs input`, body: 'Your duck wants you back 🦆' }).show()
+  else if (s === 'DONE') new Notification({ title: `${proj} finished`, body: 'Agent completed its turn ✅' }).show()
+}
+
+// Ingest a Claude Code hook event: track project, surface live working activity, split the
+// ambiguous Stop into done vs waiting, then drive the state machine.
+function handleAgentEvent(name, payload) {
+  payload = payload || {}
+  if (payload.cwd) {
+    lastProject = String(payload.cwd).split('/').filter(Boolean).pop() || lastProject
+  }
+  if (name === 'UserPromptSubmit') send('activity', 'Thinking…')
+  else if (name === 'PreToolUse') send('activity', claude.formatActivity(payload.tool_name, payload.tool_input))
+
+  if (name === 'Stop' && payload.transcript_path &&
+      claude.looksLikeQuestion(claude.lastAssistantText(payload.transcript_path))) {
+    sm.handle('Notification', { notification_type: 'idle_prompt' }) // really waiting → NEEDS_INPUT
+    return
+  }
+  sm.handle(name, payload)
 }
 
 // Deliver a meme/note as a real window the user must close; slam it shut fast → retaliation.
@@ -127,10 +179,13 @@ function deliverGift() {
 
 function onState(s) {
   send('state', s)
+  if (s !== lastFeedbackState) {
+    notify(s) // notify only on real transitions
+    lastFeedbackState = s
+  }
 
   if (s === 'NEEDS_INPUT') {
-    startCursorStream()
-    nab() // pull the cursor toward the terminal so you go answer Claude (contextual NabMouse)
+    startCursorStream() // duck runs to the cursor; the grab fires when it reaches it
   } else {
     stopCursorStream()
   }
@@ -180,7 +235,7 @@ app.whenReady().then(() => {
   listener = createListener({
     port: config.PORT,
     host: config.HOST,
-    onEvent: (name, payload) => sm.handle(name, payload),
+    onEvent: handleAgentEvent,
   })
   listener.listen()
 
@@ -201,6 +256,8 @@ app.whenReady().then(() => {
       ? systemPreferences.isTrustedAccessibilityClient(false)
       : true,
   )
+  // The duck reached the cursor during NEEDS_INPUT → now grab & drag it toward the terminal.
+  ipcMain.on('reached-cursor', () => nab())
 
   tray = createTray({
     getChaos: () => settings.chaos.enabled,
