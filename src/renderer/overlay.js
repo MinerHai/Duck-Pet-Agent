@@ -35,15 +35,20 @@ setInterval(() => {
 }, 2500)
 
 // --- Footprints (gated by chaos settings) ---
+// Goose-accurate: each print lives ~8.5s then fades over ~1s.
+const FP_TICK = 300
+const FP_LIFE = Math.round(8500 / FP_TICK) // ~28 ticks ≈ 8.4s
+const FP_FADE = Math.round(1000 / FP_TICK) // last ~3 ticks fade out
 let prints = []
+let mudRunUntil = 0 // performance.now() ms; while in the future, the duck runs amok
 setInterval(() => {
   const on = SETTINGS.chaos && SETTINGS.chaos.enabled && SETTINGS.chaos.footprints
   if (on && (duck.state === 'IDLE_ROAM' || duck.state === 'MISCHIEF')) {
-    prints.push({ x: duck.x, y: duck.y + SETTINGS.duckSize / 2, life: 120 })
+    prints.push({ x: duck.x, y: duck.y + SETTINGS.duckSize / 2, life: FP_LIFE })
   }
   prints.forEach((p) => (p.life -= 1))
   prints = prints.filter((p) => p.life > 0)
-}, 350)
+}, FP_TICK)
 
 // --- DONE celebration: short-lived confetti ---
 let confetti = []
@@ -116,10 +121,13 @@ function showGift(g) {
 
 // --- Main loop ---
 function step() {
+  const running = performance.now() < mudRunUntil
+  duck.speed = running ? 5.5 : 2.2
   const dx = duck.tx - duck.x
   const dy = duck.ty - duck.y
   const dist = Math.hypot(dx, dy)
   const moving = dist > 2
+  if (running && dist < 30) pickRoamTarget() // run amok: dart to a fresh spot
   if (moving) {
     duck.x += (dx / dist) * duck.speed
     duck.y += (dy / dist) * duck.speed
@@ -129,7 +137,7 @@ function step() {
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 
   for (const p of prints) {
-    ctx.globalAlpha = Math.min(0.4, p.life / 300)
+    ctx.globalAlpha = 0.45 * Math.min(1, p.life / FP_FADE)
     ctx.fillStyle = '#5b3a1a'
     ctx.beginPath()
     ctx.ellipse(p.x, p.y, 6, 4, 0, 0, Math.PI * 2)
@@ -184,4 +192,7 @@ if (window.duckBridge) {
     SETTINGS = s
   })
   window.duckBridge.onGift((g) => showGift(g))
+  window.duckBridge.onMud(() => {
+    mudRunUntil = performance.now() + 2000 // run amok for ~2s, like TrackMud
+  })
 }

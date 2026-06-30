@@ -17,6 +17,8 @@ const { openSettingsWindow } = require('./settings-window')
 const settingsStore = require('./settings-store')
 const content = require('./content')
 const effects = require('./effects')
+const { Deck, weightedExpand } = require('./deck')
+const giftWindow = require('./gift-window')
 const config = require('../config')
 
 let overlay = null
@@ -85,26 +87,71 @@ function pickGift() {
   return null
 }
 
+// --- Goose antics: a shuffle bag over the currently-enabled chaos behaviors, weighted
+// like the real goose (Mud×2, Meme×2, Nab×3). Rebuilt when the enabled set changes. ---
+let anticDeck = null
+let anticSig = ''
+function enabledAnticWeights() {
+  const c = settings.chaos
+  const w = {}
+  if (c.footprints) w.mud = 2
+  if (c.bringMemes) w.gift = 2
+  if (c.nudgeWindows) w.nudge = 1
+  if (c.grabCursor && c.randomAttacks) w.nab = 3 // random nab gated by CanAttackAtRandom
+  return w
+}
+function nextAntic() {
+  const sig = JSON.stringify(enabledAnticWeights())
+  if (sig !== anticSig) {
+    anticSig = sig
+    anticDeck = new Deck(weightedExpand(enabledAnticWeights()))
+  }
+  return anticDeck.draw()
+}
+
+// Drag the real cursor toward a target (default: terminal area = bottom-centre), like
+// the goose's NabMouse. Gated by chaos + grabCursor; no-ops without Accessibility.
+function nab(target) {
+  if (!(settings.chaos.enabled && settings.chaos.grabCursor)) return
+  const from = screen.getCursorScreenPoint()
+  const { width, height } = screen.getPrimaryDisplay().bounds
+  effects.cursorGrab(from, target || { x: Math.round(width / 2), y: Math.round(height * 0.85) })
+}
+
+// Deliver a meme/note as a real window the user must close; slam it shut fast → retaliation.
+function deliverGift() {
+  const g = pickGift()
+  if (!g) return
+  giftWindow.spawnGift(g, { onEarlyClose: () => nab() })
+}
+
 function onState(s) {
   send('state', s)
 
   if (s === 'NEEDS_INPUT') {
     startCursorStream()
-    if (settings.chaos.enabled && settings.chaos.grabCursor) {
-      const from = screen.getCursorScreenPoint()
-      const { width, height } = screen.getPrimaryDisplay().bounds
-      effects.cursorGrab(from, { x: Math.round(width / 2), y: Math.round(height / 2) })
-    }
+    nab() // pull the cursor toward the terminal so you go answer Claude (contextual NabMouse)
   } else {
     stopCursorStream()
   }
 
   if (s === 'MISCHIEF' && settings.chaos.enabled) {
-    if (settings.chaos.bringMemes) {
-      const g = pickGift()
-      if (g) send('gift', g)
+    switch (nextAntic()) {
+      case 'mud':
+        send('mud') // renderer: run amok + dense footprint trail
+        break
+      case 'gift':
+        deliverGift()
+        break
+      case 'nudge':
+        effects.nudgeWindow(120, 80)
+        break
+      case 'nab':
+        nab()
+        break
+      default:
+        break // no antic enabled
     }
-    if (settings.chaos.nudgeWindows) effects.nudgeWindow(120, 80)
   }
 }
 
@@ -174,6 +221,7 @@ app.on('before-quit', () => {
   if (settings.hooksInstalled) uninstallHooks({ url: config.hookUrl() })
   if (listener) listener.close()
   stopCursorStream()
+  giftWindow.closeAll()
 })
 
 // The overlay has no close affordance; quitting happens via the tray menu.

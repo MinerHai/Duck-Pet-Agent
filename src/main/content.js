@@ -2,7 +2,14 @@
 const fs = require('node:fs')
 const path = require('node:path')
 
-const SEED_NOTES = ['HONK!', "I'm watching your code 👀", 'Did you commit yet?']
+const SEED_NOTES = [
+  'am duck hjonk',
+  'good work',
+  'did you commit yet?',
+  'i cause problems on purpose',
+  '"peace was never an option" - the duck (me)',
+  'sorry, hard to type with feet',
+]
 
 function listFiles(dir, exts) {
   let names = []
