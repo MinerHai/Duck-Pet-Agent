@@ -9,6 +9,7 @@ const {
   shell,
   systemPreferences,
   Notification,
+  Menu,
 } = require('electron')
 const { StateMachine } = require('./state-machine')
 const claude = require('./claude-activity')
@@ -79,6 +80,8 @@ function createOverlay() {
   })
   overlay.setIgnoreMouseEvents(true, { forward: true })
   overlay.setAlwaysOnTop(true, 'screen-saver')
+  // Show on every Space / desktop and over fullscreen apps (not just the launch Space).
+  overlay.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   overlay.loadFile(path.join(__dirname, '..', 'renderer', 'overlay.html'))
 }
 
@@ -149,8 +152,18 @@ async function nab(target) {
   try {
     const from = screen.getCursorScreenPoint()
     const b = screen.getDisplayNearestPoint(from).bounds
-    const to = target || { x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height * 0.85) }
-    await effects.cursorGrab(from, to, 24, 12) // ~0.3s visible drag
+    let to = target || { x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height * 0.85) }
+    // Make the drag dramatic & clearly visible: at least ~480px toward the terminal,
+    // clamped to the display, dragged slowly (40 steps × 28ms ≈ 1.1s).
+    const dx = to.x - from.x
+    const dy = to.y - from.y
+    const d = Math.hypot(dx, dy) || 1
+    const reach = Math.max(480, d)
+    to = {
+      x: Math.round(Math.max(b.x + 20, Math.min(b.x + b.width - 20, from.x + (dx / d) * reach))),
+      y: Math.round(Math.max(b.y + 20, Math.min(b.y + b.height - 20, from.y + (dy / d) * reach))),
+    }
+    await effects.cursorGrab(from, to, 40, 28)
   } finally {
     grabbing = false
   }
@@ -188,6 +201,24 @@ function deliverGift() {
   const g = pickGift()
   if (!g) return
   giftWindow.spawnGift(g, { onEarlyClose: () => nab() })
+}
+
+function toggleChaos() {
+  settings = settingsStore.deepMerge(settings, { chaos: { enabled: !settings.chaos.enabled } })
+  settingsStore.save(settingsFile(), settings)
+  applySettings()
+}
+
+// Right-click menu on the pet (same actions as the tray).
+function buildContextMenu() {
+  return Menu.buildFromTemplate([
+    { label: '🦆 DuckClaude', enabled: false },
+    { type: 'separator' },
+    { label: 'Settings…', click: () => openSettingsWindow() },
+    { label: settings.chaos.enabled ? '✓ Chaos enabled' : 'Chaos disabled', click: () => toggleChaos() },
+    { type: 'separator' },
+    { label: 'Quit DuckClaude', click: () => app.quit() },
+  ])
 }
 
 function onState(s) {
@@ -272,14 +303,18 @@ app.whenReady().then(() => {
   )
   // The duck reached the cursor during NEEDS_INPUT → now grab & drag it toward the terminal.
   ipcMain.on('reached-cursor', () => nab())
+  // Hit-test toggle: the renderer reports when the cursor is over the duck so the overlay
+  // can stop being click-through and receive a right-click.
+  ipcMain.on('hover', (_e, on) => {
+    if (overlay && !overlay.isDestroyed()) overlay.setIgnoreMouseEvents(!on, { forward: true })
+  })
+  ipcMain.on('show-menu', () => {
+    if (overlay && !overlay.isDestroyed()) buildContextMenu().popup({ window: overlay })
+  })
 
   tray = createTray({
     getChaos: () => settings.chaos.enabled,
-    onToggleChaos: () => {
-      settings = settingsStore.deepMerge(settings, { chaos: { enabled: !settings.chaos.enabled } })
-      settingsStore.save(settingsFile(), settings)
-      applySettings()
-    },
+    onToggleChaos: () => toggleChaos(),
     onSettings: () => openSettingsWindow(),
     onQuit: () => app.quit(),
   })

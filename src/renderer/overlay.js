@@ -375,6 +375,30 @@ function draw(nowMs) {
   if (duck.state === 'DONE') drawConfetti()
 }
 
+// ---- Hover hit-test → right-click menu ----
+// With click-through on, the renderer still gets forwarded mousemove; when the cursor is
+// over the duck we ask main to make the window interactive so it can catch a right-click.
+let mouseX = -1
+let mouseY = -1
+let hovering = false
+window.addEventListener('mousemove', (e) => {
+  mouseX = e.clientX
+  mouseY = e.clientY
+})
+window.addEventListener('contextmenu', (e) => {
+  e.preventDefault()
+  if (hovering && window.duckBridge && window.duckBridge.showMenu) window.duckBridge.showMenu()
+})
+function updateHover() {
+  if (!window.duckBridge || !window.duckBridge.setHover) return
+  const S = (SETTINGS.duckSize || 54) / 40
+  const over = mouseX >= 0 && Math.hypot(mouseX - duck.x, mouseY - (duck.y - 18 * S)) < 44 * S
+  if (over !== hovering) {
+    hovering = over
+    window.duckBridge.setHover(over)
+  }
+}
+
 // ---- Main loop ----
 function frame() {
   const now = performance.now()
@@ -387,6 +411,7 @@ function frame() {
   duck.y = clamp(duck.y, 60, window.innerHeight - 20)
   footMarks = footMarks.filter((m) => now < m.t + 9500)
 
+  updateHover()
   draw(now)
   requestAnimationFrame(frame)
 }

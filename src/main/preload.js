@@ -9,4 +9,6 @@ contextBridge.exposeInMainWorld('duckBridge', {
   onMud: (cb) => ipcRenderer.on('mud', () => cb()),
   onActivity: (cb) => ipcRenderer.on('activity', (_e, t) => cb(t)),
   reachedCursor: () => ipcRenderer.send('reached-cursor'),
+  setHover: (on) => ipcRenderer.send('hover', on),
+  showMenu: () => ipcRenderer.send('show-menu'),
 })
