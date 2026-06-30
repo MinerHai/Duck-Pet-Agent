@@ -6,9 +6,16 @@ const DEFAULTS = Object.freeze({
   wanderMinSeconds: 20,
   wanderMaxSeconds: 40,
   duckSize: 54,
+  duckCount: 4, // size of the flock (1–8)
+  hungerMinutes: 30, // a medium duck empties its hunger bar in this long (bigger ducks last longer)
   opacity: 1.0,
   soundEnabled: true,
   honkVolume: 1.0,
+  coop: Object.freeze({
+    enabled: false, // draw the fenced pen + trough (toggled from the menu)
+    x: null, // dragged top-left position (null = default bottom-centre)
+    y: null,
+  }),
   chaos: Object.freeze({
     enabled: false,
     footprints: true,
