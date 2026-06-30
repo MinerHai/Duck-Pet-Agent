@@ -51,6 +51,8 @@ const feet = {
 let cursor = { x: duck.x, y: duck.y } // streamed from main during NEEDS_INPUT (window-local)
 let footMarks = [] // { x, y, t } in performance.now ms
 let confetti = []
+let hearts = [] // petting hearts
+let petUntil = 0 // performance.now ms; while in the future the duck is being petted (holds still)
 let lastT = performance.now()
 let reachedFired = false // signalled main to grab the cursor this NEEDS_INPUT episode
 
@@ -137,10 +139,24 @@ const smooth = (rate, dt) => 1 - Math.pow(1 - rate, dt * 120)
 
 // ---- Goal: pick tier + target for the current state. Returns true if pausing. ----
 function updateGoal(nowMs) {
+  // Being petted → hold still (overrides chasing).
+  if (nowMs < petUntil) {
+    duck.tier = 'walk'
+    duck.tx = duck.x
+    duck.ty = duck.y
+    return true
+  }
   if (duck.state === 'NEEDS_INPUT') {
-    duck.tier = 'charge'
-    duck.tx = cursor.x
-    duck.ty = cursor.y
+    if (reachedFired) {
+      // Reached & grabbed the cursor → settle here; stop chasing the (now-dragged) cursor.
+      duck.tier = 'walk'
+      duck.tx = duck.x
+      duck.ty = duck.y
+    } else {
+      duck.tier = 'charge'
+      duck.tx = cursor.x
+      duck.ty = cursor.y
+    }
     return false
   }
   duck.tier = nowMs < duck.mudUntil ? 'run' : 'walk'
@@ -297,6 +313,33 @@ function drawConfetti() {
   confetti = confetti.filter((p) => p.life > 0)
 }
 
+// Petting: left-click the duck → rising hearts + it holds still for a moment.
+function spawnHearts() {
+  petUntil = performance.now() + 2200
+  const S = (SETTINGS.duckSize || 54) / 40
+  hearts = Array.from({ length: 8 }, () => ({
+    x: duck.x + (Math.random() - 0.5) * 30 * S,
+    y: duck.y - 22 * S,
+    vx: (Math.random() - 0.5) * 1.2,
+    vy: -1 - Math.random() * 1.5,
+    life: 70 + Math.random() * 30,
+    size: 12 + Math.random() * 10,
+  }))
+}
+function drawHearts() {
+  for (const h of hearts) {
+    h.x += h.vx
+    h.y += h.vy
+    h.life -= 1
+    ctx.globalAlpha = Math.max(0, h.life / 90)
+    ctx.font = h.size + 'px sans-serif'
+    ctx.textAlign = 'center'
+    ctx.fillText('❤️', h.x, h.y)
+  }
+  ctx.globalAlpha = 1
+  hearts = hearts.filter((h) => h.life > 0)
+}
+
 // ---- Render (port of TheGoose.Render), duck-themed ----
 const COL = { body: '#FFD93D', edge: '#E0A92A', beak: '#FF8C00', eye: '#1a1a1a', mud: '#5b3a1a' }
 
@@ -373,6 +416,7 @@ function draw(nowMs) {
   const headY = P.y + (rig.head2End.y - P.y) * S
   drawBubble(nowMs, P.x, headY, STATE_COLOR[duck.state] || '#9aa3ad', duck.state === 'NEEDS_INPUT')
   if (duck.state === 'DONE') drawConfetti()
+  drawHearts()
 }
 
 // ---- Hover hit-test → right-click menu ----
@@ -388,6 +432,9 @@ window.addEventListener('mousemove', (e) => {
 window.addEventListener('contextmenu', (e) => {
   e.preventDefault()
   if (hovering && window.duckBridge && window.duckBridge.showMenu) window.duckBridge.showMenu()
+})
+window.addEventListener('mousedown', (e) => {
+  if (e.button === 0 && hovering) spawnHearts() // left-click the duck = pet it (holds still)
 })
 function updateHover() {
   if (!window.duckBridge || !window.duckBridge.setHover) return
