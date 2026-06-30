@@ -30,30 +30,43 @@ let cursorTimer = null
 let sm = null
 let dirs = null
 let settings = settingsStore.DEFAULTS
-let overlayOrigin = { x: 0, y: 0 } // top-left of the multi-display overlay (DIP)
+let overlayOrigin = { x: 0, y: 0 } // top-left of the current display the overlay covers (DIP)
+let currentDisplayId = null // which display the overlay currently sits on
+let displayFollowTimer = null // relocates the overlay to your active monitor
 let lastProject = '' // basename of the most recent agent cwd, for notifications
 let grabbing = false // a NabMouse cursor drag is in progress
 
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json')
 
-// Bounding box of all displays (so the duck can roam across every monitor).
-function virtualBounds() {
-  const ds = screen.getAllDisplays()
-  const minX = Math.min(...ds.map((d) => d.bounds.x))
-  const minY = Math.min(...ds.map((d) => d.bounds.y))
-  const maxX = Math.max(...ds.map((d) => d.bounds.x + d.bounds.width))
-  const maxY = Math.max(...ds.map((d) => d.bounds.y + d.bounds.height))
-  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+// macOS ("Displays have separate Spaces") won't let one window span two monitors, so the
+// overlay covers exactly ONE display and follows your active monitor instead.
+function cursorDisplay() {
+  try {
+    return screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  } catch {
+    return screen.getPrimaryDisplay()
+  }
+}
+
+// Move the overlay to a different display (keeps it always fully on-screen, no dead zones).
+function relocateToDisplay(d) {
+  if (!overlay || overlay.isDestroyed() || !d || d.id === currentDisplayId) return
+  const b = d.bounds
+  overlay.setBounds({ x: b.x, y: b.y, width: b.width, height: b.height })
+  overlayOrigin = { x: b.x, y: b.y }
+  currentDisplayId = d.id
 }
 
 function createOverlay() {
-  const vb = virtualBounds()
-  overlayOrigin = { x: vb.x, y: vb.y }
+  const d = cursorDisplay()
+  const b = d.bounds
+  overlayOrigin = { x: b.x, y: b.y }
+  currentDisplayId = d.id
   overlay = new BrowserWindow({
-    x: vb.x,
-    y: vb.y,
-    width: vb.width,
-    height: vb.height,
+    x: b.x,
+    y: b.y,
+    width: b.width,
+    height: b.height,
     transparent: true,
     frame: false,
     resizable: false,
@@ -185,6 +198,7 @@ function onState(s) {
   }
 
   if (s === 'NEEDS_INPUT') {
+    relocateToDisplay(cursorDisplay()) // hop to the monitor your cursor is on, then chase it
     startCursorStream() // duck runs to the cursor; the grab fires when it reaches it
   } else {
     stopCursorStream()
@@ -270,6 +284,13 @@ app.whenReady().then(() => {
     onQuit: () => app.quit(),
   })
 
+  // Follow the active monitor while idle (don't yank mid-chase).
+  displayFollowTimer = setInterval(() => {
+    if (lastFeedbackState === 'NEEDS_INPUT') return
+    const d = cursorDisplay()
+    if (d.id !== currentDisplayId) relocateToDisplay(d)
+  }, 1500)
+
   // Keep DuckClaude out of the Dock — it's a menu-bar companion.
   if (process.platform === 'darwin' && app.dock) app.dock.hide()
 })
@@ -278,6 +299,7 @@ app.on('before-quit', () => {
   if (settings.hooksInstalled) uninstallHooks({ url: config.hookUrl() })
   if (listener) listener.close()
   stopCursorStream()
+  if (displayFollowTimer) clearInterval(displayFollowTimer)
   giftWindow.closeAll()
 })
 
