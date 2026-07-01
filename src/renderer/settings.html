@@ -64,6 +64,17 @@
     </section>
 
     <section>
+      <h2>Flock</h2>
+      <div class="row"><label>Number of ducks</label><input id="count" type="range" min="1" max="8" /><span class="val" id="countV"></span></div>
+      <p class="hint">Each duck gets one of three Fibonacci sizes (3 : 5 : 8) and a random colour.</p>
+      <div class="row"><label>Hunger time</label><input id="hunger" type="range" min="1" max="60" /><span class="val" id="hungerV"></span></div>
+      <p class="hint">A medium duck empties its hunger bar in this long; bigger ducks last proportionally longer.</p>
+      <div class="row"><label>Show coop (chuồng + máng)</label><input id="coop" type="checkbox" /></div>
+      <div class="row"><button id="feed">🌾 Feed ducks</button></div>
+      <p class="hint">Feeding drops grain in the trough — the flock rushes over to eat.</p>
+    </section>
+
+    <section>
       <h2>Appearance</h2>
       <div class="row"><label>Duck size</label><input id="size" type="range" min="24" max="96" /><span class="val" id="sizeV"></span></div>
       <div class="row"><label>Opacity</label><input id="opacity" type="range" min="20" max="100" /><span class="val" id="opacityV"></span></div>

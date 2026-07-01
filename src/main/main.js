@@ -22,6 +22,7 @@ const content = require('./content')
 const effects = require('./effects')
 const { Deck, weightedExpand } = require('./deck')
 const giftWindow = require('./gift-window')
+const { pickAdjacent, nextDisplay } = require('./displays')
 const config = require('../config')
 
 let overlay = null
@@ -33,6 +34,7 @@ let dirs = null
 let settings = settingsStore.DEFAULTS
 let overlayOrigin = { x: 0, y: 0 } // top-left of the current display the overlay covers (DIP)
 let currentDisplayId = null // which display the overlay currently sits on
+let pinnedDisplayId = null // when set, the overlay stays on this monitor (stops auto-following)
 let displayFollowTimer = null // relocates the overlay to your active monitor
 let lastProject = '' // basename of the most recent agent cwd, for notifications
 let grabbing = false // a NabMouse cursor drag is in progress
@@ -59,6 +61,26 @@ function relocateToDisplay(d) {
   overlay.setBounds({ x: b.x, y: b.y, width: b.width, height: b.height })
   overlayOrigin = { x: b.x, y: b.y }
   currentDisplayId = d.id
+}
+
+// Hop the overlay to the monitor on the given side (when the coop is dragged off the edge),
+// pin it there, and tell the renderer to drop the coop at the edge it entered from.
+function hopOverlay(dir) {
+  const target = pickAdjacent(screen.getAllDisplays(), currentDisplayId, dir)
+  if (!target) return
+  relocateToDisplay(target)
+  pinnedDisplayId = target.id
+  send('coop-place', dir === 'left' ? 'right' : 'left')
+}
+// Menu action: send the flock to the next monitor and pin it there.
+function moveToOtherDisplay() {
+  const target = nextDisplay(screen.getAllDisplays(), currentDisplayId)
+  if (!target) return
+  relocateToDisplay(target)
+  pinnedDisplayId = target.id
+}
+function followCursorDisplay() {
+  pinnedDisplayId = null
 }
 
 function createOverlay() {
@@ -217,25 +239,39 @@ function toggleChaos() {
   applySettings()
 }
 
-// agentpet-style menu: a live status header + the controls. Used by both the menu-bar
-// (tray) dropdown and the right-click menu on the pet.
-const STATE_LABEL = {
-  WORKING: '🔵 Working',
-  NEEDS_INPUT: '🟠 Needs your input',
-  DONE: '🟢 Done',
-  MISCHIEF: '🦆 Causing chaos',
-  IDLE_ROAM: '⚪️ Idle',
+function toggleCoop() {
+  settings = settingsStore.deepMerge(settings, { coop: { enabled: !settings.coop.enabled } })
+  settingsStore.save(settingsFile(), settings)
+  applySettings()
 }
-function elapsedStr() {
-  const sec = Math.max(0, Math.round((Date.now() - stateSinceMs) / 1000))
-  return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`
+
+// Drop grain into the trough; the renderer makes the flock rush over to eat.
+function feedDucks() {
+  send('feed')
 }
-function buildMenu() {
-  const items = [{ label: STATE_LABEL[agentState] || '⚪️ Idle', enabled: false }]
-  if (agentState === 'WORKING' && lastActivity) items.push({ label: `    ${lastActivity}`, enabled: false })
-  items.push({ label: `    ${lastProject || 'Claude Code'} · ${elapsedStr()}`, enabled: false })
-  items.push(
+
+// Display controls only make sense with more than one monitor.
+function displayMenuItems() {
+  if (screen.getAllDisplays().length < 2) return []
+  return [
+    { label: '🖥️ Vịt sang màn hình khác', click: () => moveToOtherDisplay() },
+    {
+      label: pinnedDisplayId == null ? '✓ Theo con trỏ' : '📍 Theo con trỏ',
+      click: () => followCursorDisplay(),
+    },
     { type: 'separator' },
+  ]
+}
+
+// Right-click menu on the pet (same actions as the tray).
+function buildContextMenu() {
+  return Menu.buildFromTemplate([
+    { label: '🦆 DuckClaude', enabled: false },
+    { type: 'separator' },
+    { label: '🌾 Cho vịt ăn', click: () => feedDucks() },
+    { label: settings.coop.enabled ? '✓ Chuồng vịt' : 'Chuồng vịt', click: () => toggleCoop() },
+    { type: 'separator' },
+    ...displayMenuItems(),
     { label: 'Settings…', click: () => openSettingsWindow() },
     {
       label: 'Chaos',
@@ -270,7 +306,7 @@ function onState(s) {
   refreshTray() // keep the menu-bar status fresh
 
   if (s === 'NEEDS_INPUT') {
-    relocateToDisplay(cursorDisplay()) // hop to the monitor your cursor is on, then chase it
+    if (pinnedDisplayId == null) relocateToDisplay(cursorDisplay()) // hop to your monitor (unless pinned)
     startCursorStream() // duck runs to the cursor; the grab fires when it reaches it
   } else {
     stopCursorStream()
@@ -335,6 +371,7 @@ app.whenReady().then(() => {
     applySettings()
     return settings
   })
+  ipcMain.handle('duck:feed', () => feedDucks())
   ipcMain.handle('content:openMemes', () => shell.openPath(dirs.memesDir))
   ipcMain.handle('content:openNotes', () => shell.openPath(dirs.notesDir))
   ipcMain.handle('perm:accessibility', () =>
@@ -350,13 +387,36 @@ app.whenReady().then(() => {
   ipcMain.on('show-menu', () => {
     if (overlay && !overlay.isDestroyed()) buildMenu().popup({ window: overlay })
   })
+  // The pet's coop was dragged to a new spot — persist it so it stays put across restarts.
+  ipcMain.on('coop-move', (_e, pos) => {
+    if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) return
+    settings = settingsStore.deepMerge(settings, { coop: { x: Math.round(pos.x), y: Math.round(pos.y) } })
+    settingsStore.save(settingsFile(), settings)
+    applySettings()
+  })
+  // Coop dragged off the screen edge → hop the overlay to the adjacent monitor.
+  ipcMain.on('coop-cross', (_e, dir) => {
+    if (dir === 'left' || dir === 'right') hopOverlay(dir)
+  })
 
-  tray = createTray()
-  refreshTray() // build the status menu + title
+  tray = createTray({
+    getChaos: () => settings.chaos.enabled,
+    getCoop: () => settings.coop.enabled,
+    hasMultiDisplay: () => screen.getAllDisplays().length > 1,
+    isPinned: () => pinnedDisplayId != null,
+    onToggleChaos: () => toggleChaos(),
+    onToggleCoop: () => toggleCoop(),
+    onFeed: () => feedDucks(),
+    onNextDisplay: () => moveToOtherDisplay(),
+    onFollowDisplay: () => followCursorDisplay(),
+    onSettings: () => openSettingsWindow(),
+    onQuit: () => app.quit(),
+  })
 
   // Follow the active monitor while idle (don't yank mid-chase).
   displayFollowTimer = setInterval(() => {
     if (lastFeedbackState === 'NEEDS_INPUT') return
+    if (pinnedDisplayId != null) return // user parked the flock on a specific monitor
     const d = cursorDisplay()
     if (d.id !== currentDisplayId) relocateToDisplay(d)
   }, 1500)

@@ -17,6 +17,12 @@ function applyToUI() {
     el.disabled = !S.chaos.enabled
   })
 
+  $('count').value = S.duckCount
+  $('countV').textContent = S.duckCount + (S.duckCount > 1 ? ' ducks' : ' duck')
+  $('hunger').value = S.hungerMinutes
+  $('hungerV').textContent = S.hungerMinutes + ' min'
+  $('coop').checked = S.coop.enabled
+
   $('size').value = S.duckSize
   $('sizeV').textContent = S.duckSize + 'px'
   $('opacity').value = Math.round(S.opacity * 100)
@@ -39,6 +45,10 @@ function wire() {
   document.querySelectorAll('[data-chaos]').forEach((el) => {
     el.onchange = () => push({ chaos: { [el.dataset.chaos]: el.checked } })
   })
+  $('count').oninput = (e) => push({ duckCount: +e.target.value })
+  $('hunger').oninput = (e) => push({ hungerMinutes: +e.target.value })
+  $('coop').onchange = (e) => push({ coop: { enabled: e.target.checked } })
+  $('feed').onclick = () => B.feed()
   $('size').oninput = (e) => push({ duckSize: +e.target.value })
   $('opacity').oninput = (e) => push({ opacity: +e.target.value / 100 })
   $('sound').onchange = (e) => push({ soundEnabled: e.target.checked })
