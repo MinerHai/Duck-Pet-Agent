@@ -38,6 +38,9 @@ let pinnedDisplayId = null // when set, the overlay stays on this monitor (stops
 let displayFollowTimer = null // relocates the overlay to your active monitor
 let lastProject = '' // basename of the most recent agent cwd, for notifications
 let grabbing = false // a NabMouse cursor drag is in progress
+let agentState = 'IDLE_ROAM' // latest Claude state, shown in the menu
+let lastActivity = '' // latest live working activity (from tool_name)
+let stateSinceMs = Date.now() // when the current state began (for elapsed in the menu)
 
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json')
 
@@ -207,8 +210,13 @@ function handleAgentEvent(name, payload) {
   if (payload.cwd) {
     lastProject = String(payload.cwd).split('/').filter(Boolean).pop() || lastProject
   }
-  if (name === 'UserPromptSubmit') send('activity', 'Thinking…')
-  else if (name === 'PreToolUse') send('activity', claude.formatActivity(payload.tool_name, payload.tool_input))
+  if (name === 'UserPromptSubmit') {
+    lastActivity = 'Thinking…'
+    send('activity', lastActivity)
+  } else if (name === 'PreToolUse') {
+    lastActivity = claude.formatActivity(payload.tool_name, payload.tool_input)
+    send('activity', lastActivity)
+  }
 
   if (name === 'Stop' && payload.transcript_path &&
       claude.looksLikeQuestion(claude.lastAssistantText(payload.transcript_path))) {
@@ -265,18 +273,37 @@ function buildContextMenu() {
     { type: 'separator' },
     ...displayMenuItems(),
     { label: 'Settings…', click: () => openSettingsWindow() },
-    { label: settings.chaos.enabled ? '✓ Chaos enabled' : 'Chaos disabled', click: () => toggleChaos() },
+    {
+      label: 'Chaos',
+      submenu: [
+        { label: 'Enable chaos', type: 'checkbox', checked: settings.chaos.enabled, click: () => toggleChaos() },
+      ],
+    },
+    { label: 'Open Memes Folder', click: () => dirs && shell.openPath(dirs.memesDir) },
+    { label: 'Open Notes Folder', click: () => dirs && shell.openPath(dirs.notesDir) },
     { type: 'separator' },
     { label: 'Quit DuckClaude', click: () => app.quit() },
-  ])
+  )
+  return Menu.buildFromTemplate(items)
+}
+
+function refreshTray() {
+  if (!tray) return
+  tray.setContextMenu(buildMenu())
+  tray.setTitle(agentState === 'NEEDS_INPUT' ? '🦆❗' : '🦆') // flag when Claude needs you
 }
 
 function onState(s) {
   send('state', s)
+  if (s !== agentState) {
+    agentState = s
+    stateSinceMs = Date.now()
+  }
   if (s !== lastFeedbackState) {
     notify(s) // notify only on real transitions
     lastFeedbackState = s
   }
+  refreshTray() // keep the menu-bar status fresh
 
   if (s === 'NEEDS_INPUT') {
     if (pinnedDisplayId == null) relocateToDisplay(cursorDisplay()) // hop to your monitor (unless pinned)
@@ -358,7 +385,7 @@ app.whenReady().then(() => {
     if (overlay && !overlay.isDestroyed()) overlay.setIgnoreMouseEvents(!on, { forward: true })
   })
   ipcMain.on('show-menu', () => {
-    if (overlay && !overlay.isDestroyed()) buildContextMenu().popup({ window: overlay })
+    if (overlay && !overlay.isDestroyed()) buildMenu().popup({ window: overlay })
   })
   // The pet's coop was dragged to a new spot — persist it so it stays put across restarts.
   ipcMain.on('coop-move', (_e, pos) => {

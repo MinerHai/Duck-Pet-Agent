@@ -1,5 +1,5 @@
 'use strict'
-const { Tray, Menu, nativeImage } = require('electron')
+const { Tray, nativeImage } = require('electron')
 
 function createTray({
   onToggleChaos,
